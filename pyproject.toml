@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-client"
+version = "0.1.0"
+description = "HERMES AI — Windows IT Assistant client for Hermes Server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "HERMES" }]
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "keyring>=25.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "structlog>=24.1",
+    "pyyaml>=6.0",
+    "psutil>=6.0",
+    "pyautogui>=0.9",
+    "pygetwindow>=0.0.9",
+    "pillow>=10.0",
+    "SpeechRecognition>=3.10",
+    "pyttsx3>=2.90",
+    "customtkinter>=5.2",
+    "pystray>=0.19",
+    "winotify>=1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+hermes-client = "hermes.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

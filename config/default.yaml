@@ -1,0 +1,52 @@
+# HERMES Client — default configuration
+# Sensitive values (API key) should come from environment or Windows Credential Manager.
+
+server:
+  url: "http://50.6.226.228:8642"
+  timeout_seconds: 120
+  verify_ssl: false
+  model: "hermes-agent"
+
+client:
+  name: "HERMES Windows Client"
+  max_agent_steps: 50
+  agent_step_timeout_seconds: 300
+  debug: false
+  prefer_short_responses: true
+
+voice:
+  enabled: true
+  wake_word_enabled: true
+  wake_words:
+    - abi
+    - akhi
+    - dostum
+  wake_listen_timeout_seconds: 3
+  wake_phrase_limit_seconds: 4
+  command_listen_timeout_seconds: 8
+  command_phrase_limit_seconds: 12
+  beep_on_wake: true
+  show_listening_prompt: true
+  stt_language: "tr-TR"
+
+ui:
+  window_width: 420
+  window_height: 560
+  connection_check_interval_seconds: 60
+  notifications_enabled: true
+  auto_approve_local_tools: true
+
+security:
+  require_approval_for:
+    - normal_modification
+    - high_risk
+  audit_log_path: "%LOCALAPPDATA%/HERMES/audit.log"
+  redact_patterns:
+    - "password"
+    - "token"
+    - "api_key"
+    - "secret"
+
+logging:
+  level: INFO
+  format: json

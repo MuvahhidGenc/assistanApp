@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# HERMES runtime
+*.log
+HERMES/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
