@@ -14,12 +14,15 @@ async def test_worker_check_connection_connected():
     worker = BackgroundWorker()
     worker._app = MagicMock()
     worker._app.server.health = AsyncMock(return_value=MagicMock(status="ok"))
+    worker._app.agent.initialize_session = AsyncMock(return_value="sess-1")
+    worker._app.agent.state.session_notice = None
     events: list[str] = []
     worker.on_event = lambda e, p: events.append(e)
 
     await worker._check_connection()
 
     assert worker.state.connection == ConnectionStatus.CONNECTED
+    worker._app.agent.initialize_session.assert_awaited()
     assert "state" in events
 
 
@@ -32,6 +35,37 @@ async def test_worker_check_connection_error():
     await worker._check_connection()
 
     assert worker.state.connection == ConnectionStatus.DISCONNECTED
+
+
+@pytest.mark.asyncio
+async def test_worker_check_connection_hides_raw_connect_error():
+    from hermes.server.client import HermesServerError
+
+    worker = BackgroundWorker()
+    worker._app = MagicMock()
+    worker._app.server.health = AsyncMock(
+        side_effect=HermesServerError("All connection attempts failed")
+    )
+
+    await worker._check_connection()
+
+    assert worker.state.connection == ConnectionStatus.DISCONNECTED
+    assert worker.state.status_text == "Sunucu bekleniyor..."
+
+
+@pytest.mark.asyncio
+async def test_worker_reconnect_reinitializes_session():
+    worker = BackgroundWorker()
+    worker.state.set_connection(ConnectionStatus.DISCONNECTED, detail="offline")
+    worker._app = MagicMock()
+    worker._app.server.health = AsyncMock(return_value=MagicMock(status="ok"))
+    worker._app.agent.initialize_session = AsyncMock(return_value="sess-re")
+    worker._app.agent.state.session_notice = None
+
+    await worker._check_connection()
+
+    assert worker.state.connection == ConnectionStatus.CONNECTED
+    worker._app.agent.initialize_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -52,20 +86,45 @@ async def test_worker_send_message():
 
 
 @pytest.mark.asyncio
-async def test_worker_set_voice_requires_microphone():
+async def test_worker_resolve_approval_sets_future():
+    worker = BackgroundWorker()
+    loop = asyncio.get_running_loop()
+    worker._loop = loop
+    worker._approval_future = loop.create_future()
+    worker.resolve_approval("evet")
+    await asyncio.sleep(0.01)
+    assert worker._approval_future.result() == "evet"
+
+
+@pytest.mark.asyncio
+async def test_worker_blocks_new_message_while_approval_pending():
+    worker = BackgroundWorker()
+    loop = asyncio.get_running_loop()
+    worker._loop = loop
+    worker._approval_future = loop.create_future()
+    errors: list[str] = []
+    worker.on_event = lambda e, p: errors.append(p.get("message", "")) if e == "error" else None
+
+    worker.send_message("dns degistir google yap")
+
+    assert worker._approval_is_pending()
+    assert any("Onay bekleniyor" in msg for msg in errors)
+
+
+@pytest.mark.asyncio
+async def test_worker_set_voice_works_without_microphone():
     worker = BackgroundWorker()
     worker._voice = MagicMock()
     worker._voice.microphone_available = False
+    worker._voice.voice_enabled = True
     worker._voice.configure_voice = AsyncMock()
-    errors: list[str] = []
-    worker.on_event = lambda e, p: errors.append(p.get("message", "")) if e == "error" else None
+    worker.on_event = lambda e, p: None
 
     await worker._handle_command(
         WorkerCommandPayload(WorkerCommand.SET_VOICE, {"enabled": True})
     )
 
-    worker._voice.configure_voice.assert_not_called()
-    assert any("Mikrofon" in msg for msg in errors)
+    assert worker._voice.configure_voice.await_count >= 1
 
 
 @pytest.mark.asyncio

@@ -25,4 +25,24 @@ if (-not (Test-Path $exe)) {
     throw "Build failed: dist\hermes-client.exe not found"
 }
 
-Write-Host "Build complete: $exe"
+$releaseDir = Join-Path (Get-Location) "release\HermesClient"
+New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+$releaseExe = Join-Path $releaseDir "hermes-client.exe"
+Copy-Item $exe $releaseExe -Force
+
+$installDir = Join-Path $env:LOCALAPPDATA "HermesClient"
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+$target = Join-Path $installDir "hermes-client.exe"
+try {
+    Copy-Item $exe $target -Force
+    $installed = $target
+} catch {
+    Write-Warning "LocalAppData copy skipped (exe may be running): $target"
+    Write-Warning $_.Exception.Message
+    $installed = "(skipped - close Hermes and rebuild)"
+}
+
+Write-Host "Build complete."
+Write-Host "  Build output : $exe"
+Write-Host "  Release pkg  : $releaseExe"
+Write-Host "  Installed to : $installed"

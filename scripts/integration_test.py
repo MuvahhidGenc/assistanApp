@@ -15,7 +15,8 @@ async def main() -> int:
     from hermes.config.credentials import resolve_api_key
     from hermes.config.settings import AppSettings
     from hermes.server.client import HermesServerClient, HermesServerError
-    from hermes.tools.system import EchoTool, GetSystemInfoTool
+    from hermes.tools.windows.debug_tools import EchoTool
+    from hermes.tools.windows.system_tools import GetSystemInfoTool
 
     settings = AppSettings.load()
     api_key = resolve_api_key(settings.api_key.get_secret_value())

@@ -8,7 +8,7 @@ import pytest
 from hermes.config.settings import VoiceSettings
 from hermes.voice.assistant import VoiceAssistant, build_voice_assistant
 from hermes.voice.stt import NullSpeechToText
-from hermes.voice.tts import NullTextToSpeech
+from hermes.voice.tts import NullTextToSpeech, pick_edge_voice
 from hermes.voice.wake_word import detect_wake_word, is_stop_command, normalize_voice_text
 
 
@@ -24,7 +24,13 @@ class MockSTT:
     def unavailable_reason(self) -> str:
         return "ok"
 
-    async def listen(self, *, timeout: float, phrase_limit: float | None = None) -> str | None:
+    async def listen(
+        self,
+        timeout: float,
+        *,
+        phrase_limit: float | None = None,
+        pause_seconds: float | None = None,
+    ) -> str | None:
         self.listen_calls += 1
         if not self._responses:
             return None
@@ -48,7 +54,7 @@ class MockTTS:
 
 @pytest.fixture
 def voice_settings() -> VoiceSettings:
-    return VoiceSettings(wake_word_enabled=True)
+    return VoiceSettings(wake_word_enabled=True, continuous_listen=False)
 
 
 @pytest.fixture
@@ -59,6 +65,22 @@ def mock_agent():
     agent._server = MagicMock()
     agent._server.stop_run = AsyncMock()
     return agent
+
+
+def test_brief_spoken_reply_always_short_for_long_text():
+    from hermes.voice.spoken import brief_spoken_reply, looks_like_missing_tools
+
+    long_ok = "DNS guncellendi: 8.8.8.8. Adapter Wi-Fi. Daha fazla detay sohbette duruyor."
+    assert brief_spoken_reply(long_ok) == "Tamam, DNS ayarlandı."
+    assert brief_spoken_reply("Anladım. Detaylar aşağıda.") == "Anladım"
+    assert brief_spoken_reply("Merhaba abi.") == "Merhaba abi"
+    assert len(brief_spoken_reply("x" * 200)) < 80
+    assert looks_like_missing_tools("yerel arac yok")
+
+
+def test_pick_edge_voice_uses_ahmet():
+    assert pick_edge_voice("", "male") == "tr-TR-AhmetNeural"
+    assert pick_edge_voice("tr-TR-EmelNeural", "male") == "tr-TR-AhmetNeural"
 
 
 def test_normalize_voice_text():
@@ -100,6 +122,22 @@ def test_voice_settings_wake_word_toggle():
 
 
 @pytest.mark.asyncio
+async def test_text_input_speaks_brief_reply(mock_agent, voice_settings):
+    mock_agent.process_message = AsyncMock(
+        return_value="Ekranda gorunen yazi:\n" + ("satir " * 40)
+    )
+    tts = MockTTS()
+    assistant = VoiceAssistant(
+        settings=voice_settings.model_copy(update={"wake_word_enabled": False}),
+        agent=mock_agent,
+        stt=NullSpeechToText("test"),
+        tts=tts,
+    )
+    await assistant.handle_text_input("ekrani oku")
+    assert tts.spoken[-1] == "Ekrana baktım abi, detaylar sohbette."
+
+
+@pytest.mark.asyncio
 async def test_text_input_always_works(mock_agent, voice_settings):
     tts = MockTTS()
     assistant = VoiceAssistant(
@@ -118,6 +156,20 @@ async def test_text_input_always_works(mock_agent, voice_settings):
 
     mock_agent.process_message.assert_called_once_with("merhaba")
     assert responses == ["Merhaba abi."]
+    assert tts.spoken[-1] == "Merhaba abi"
+
+
+@pytest.mark.asyncio
+async def test_text_input_speaks_when_voice_flag_off(mock_agent, voice_settings):
+    tts = MockTTS()
+    assistant = VoiceAssistant(
+        settings=voice_settings.model_copy(update={"wake_word_enabled": False}),
+        agent=mock_agent,
+        stt=NullSpeechToText("test"),
+        tts=tts,
+    )
+    await assistant.configure_voice(voice_enabled=False)
+    await assistant.handle_text_input("merhaba")
     assert tts.spoken == []
 
 
@@ -144,6 +196,30 @@ async def test_no_microphone_does_not_crash(mock_agent, voice_settings):
 
 
 @pytest.mark.asyncio
+async def test_voice_input_shown_via_callback(mock_agent, voice_settings):
+    stt = MockSTT(["abi chrome ac", None])
+    tts = MockTTS()
+    assistant = VoiceAssistant(
+        settings=voice_settings,
+        agent=mock_agent,
+        stt=stt,
+        tts=tts,
+    )
+    user_inputs: list[tuple[str, str]] = []
+    assistant.on_user_input = AsyncMock(
+        side_effect=lambda text, source: user_inputs.append((text, source))
+    )
+    assistant.on_response = AsyncMock()
+
+    with patch.object(assistant, "_speak_prompt", new=AsyncMock()):
+        await assistant.start()
+        await asyncio.sleep(0.35)
+        await assistant.stop()
+
+    assert ("chrome ac", "voice") in user_inputs
+
+
+@pytest.mark.asyncio
 async def test_wake_word_triggers_command_and_tts(mock_agent, voice_settings):
     stt = MockSTT(["abi disk bilgisi", None])
     tts = MockTTS()
@@ -161,31 +237,37 @@ async def test_wake_word_triggers_command_and_tts(mock_agent, voice_settings):
     assistant.on_response = AsyncMock()
     assistant.on_status = on_status
 
-    with patch("hermes.voice.assistant.play_wake_beep", return_value=True):
+    with patch.object(assistant, "_speak_prompt", new=AsyncMock()):
         await assistant.start()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.35)
         await assistant.stop()
 
     mock_agent.process_message.assert_called_with("disk bilgisi")
-    assert any("Dinliyorum" in s for s in statuses)
-    assert tts.spoken == ["Merhaba abi."]
+    assert any("Sesli mod" in s or "Dinliyorum" in s for s in statuses)
+    assert tts.spoken[-1] == "Merhaba abi"
 
 
 @pytest.mark.asyncio
 async def test_wake_word_two_step_listen(mock_agent, voice_settings):
-    stt = MockSTT(["abi", "chrome ac"])
+    stt = MockSTT(["abi", "chrome ac", None])
     tts = MockTTS()
     assistant = VoiceAssistant(
-        settings=voice_settings,
+        settings=voice_settings.model_copy(
+            update={
+                "continuous_listen": True,
+                "command_listen_timeout_seconds": 0.1,
+            }
+        ),
         agent=mock_agent,
         stt=stt,
         tts=tts,
     )
     assistant.on_response = AsyncMock()
 
-    with patch("hermes.voice.assistant.play_wake_beep", return_value=True):
+    with patch.object(assistant, "_speak_prompt", new=AsyncMock()):
         await assistant.start()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.4)
+        assistant._voice_session_active = False
         await assistant.stop()
 
     mock_agent.process_message.assert_called_with("chrome ac")

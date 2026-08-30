@@ -7,6 +7,8 @@ build/
 .venv/
 venv/
 .env
+credentials.yaml
+**/credentials.yaml
 
 # IDE
 .vscode/
@@ -24,3 +26,13 @@ Desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Build output (GitHub 100 MB limit — build locally with scripts/build_windows.ps1)
+release/HermesClient/hermes-client.exe
+release/**/*.exe
+
+# Local extract / scratch
+hermes-client.exe_extracted/
+_tmp_pyc_map/
+_tmp_dis.py
+_tmp_dump_all.py

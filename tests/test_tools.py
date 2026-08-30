@@ -36,9 +36,11 @@ def test_default_registry():
     registry = create_default_registry()
     assert "get_system_info" in registry
     assert "get_network_config" in registry
+    assert "set_dns" in registry
+    assert "list_windows" in registry
     assert "list_services" in registry
     assert "read_registry" in registry
-    assert len(registry) >= 22
+    assert len(registry) >= 28
 
 
 def test_read_registry_is_read_only_in_policy():

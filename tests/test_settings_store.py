@@ -29,6 +29,29 @@ def test_validate_api_url_accepts_http():
     assert validate_api_url("https://hermes.example.com") is None
 
 
+def test_app_settings_load_reads_sessions(tmp_path):
+    from hermes.config.settings import AppSettings
+
+    cfg = tmp_path / "default.yaml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "server:",
+                "  url: http://50.6.226.228:8642",
+                "sessions:",
+                "  record_sessions: true",
+                "  session_ttl_seconds: 1800",
+                '  session_key: "hermes-pc-session"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    settings = AppSettings.load(cfg)
+    assert settings.sessions.record_sessions is True
+    assert settings.sessions.session_ttl_seconds == 1800
+    assert settings.sessions.session_key == "hermes-pc-session"
+
+
 def test_validate_api_key_rejects_empty():
     assert validate_api_key("") == "API key/token bos olamaz."
     assert validate_api_key("   ") == "API key/token bos olamaz."

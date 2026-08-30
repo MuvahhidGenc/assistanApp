@@ -25,13 +25,23 @@ dependencies = [
     "pygetwindow>=0.0.9",
     "pillow>=10.0",
     "SpeechRecognition>=3.10",
+    "PyAudio>=0.2.14",
     "pyttsx3>=2.90",
+    "edge-tts>=7.0",
+    "faster-whisper>=1.1",
+    "pywin32>=306; platform_system == 'Windows'",
+    "opencv-python-headless>=4.10",
+    "pytesseract>=0.3.13",
+    "python-docx>=1.1.0",
     "customtkinter>=5.2",
     "pystray>=0.19",
     "winotify>=1.1",
 ]
 
 [project.optional-dependencies]
+whisper = [
+    "faster-whisper>=1.1",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -48,6 +58,7 @@ packages = ["src/hermes"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

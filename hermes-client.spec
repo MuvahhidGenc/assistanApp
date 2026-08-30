@@ -16,14 +16,21 @@ if (root / "assets" / "tray.png").exists():
     datas.append((str(root / "assets" / "tray.png"), "assets"))
 
 datas += collect_data_files("customtkinter")
+datas += collect_data_files("edge_tts")
 
 hiddenimports = collect_submodules("customtkinter")
+hiddenimports += collect_submodules("edge_tts")
 hiddenimports += [
+    "aiohttp",
+    "certifi",
     "pystray",
     "PIL",
     "PIL.Image",
     "speech_recognition",
+    "pyaudio",
     "pyttsx3",
+    "edge_tts",
+    "faster_whisper",
     "winotify",
     "keyring.backends",
     "keyring.backends.Windows",
@@ -63,6 +70,7 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
+    uac_admin=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

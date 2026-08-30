@@ -21,17 +21,23 @@ voice:
     - abi
     - akhi
     - dostum
-  wake_listen_timeout_seconds: 3
-  wake_phrase_limit_seconds: 4
-  command_listen_timeout_seconds: 8
-  command_phrase_limit_seconds: 12
-  beep_on_wake: true
+  wake_listen_timeout_seconds: 6
+  wake_phrase_limit_seconds: 8
+  command_listen_timeout_seconds: 12
+  command_phrase_limit_seconds: 18
+  beep_on_wake: false
   show_listening_prompt: true
   stt_language: "tr-TR"
+  tts_backend: "elevenlabs"
+  tts_language: "tr-TR"
+  tts_gender: "male"
+  tts_voice: "tr-TR-AhmetNeural"
+  elevenlabs_voice_id: "pNInz6obpgDQGcFmaJgB"
+  elevenlabs_model: "eleven_multilingual_v2"
 
 ui:
-  window_width: 420
-  window_height: 560
+  window_width: 1360
+  window_height: 820
   connection_check_interval_seconds: 60
   notifications_enabled: true
   auto_approve_local_tools: true
@@ -50,3 +56,8 @@ security:
 logging:
   level: INFO
   format: json
+
+sessions:
+  record_sessions: true
+  session_ttl_seconds: 3600
+  session_key: "hermes-pc-session"
