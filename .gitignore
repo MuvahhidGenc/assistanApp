@@ -14,9 +14,9 @@ credentials.yaml
 .vscode/
 .idea/
 
-# HERMES runtime
+# HERMES runtime (root-only — do not use HERMES/; Windows ignores src/hermes/)
 *.log
-HERMES/
+/HERMES/
 
 # OS
 Thumbs.db
