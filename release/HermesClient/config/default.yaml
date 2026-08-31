@@ -21,11 +21,11 @@ voice:
     - abi
     - akhi
     - dostum
-  wake_listen_timeout_seconds: 4
-  wake_phrase_limit_seconds: 5
-  command_listen_timeout_seconds: 10
-  command_phrase_limit_seconds: 14
-  beep_on_wake: true
+  wake_listen_timeout_seconds: 6
+  wake_phrase_limit_seconds: 8
+  command_listen_timeout_seconds: 12
+  command_phrase_limit_seconds: 18
+  beep_on_wake: false
   show_listening_prompt: true
   stt_language: "tr-TR"
   tts_backend: "elevenlabs"
