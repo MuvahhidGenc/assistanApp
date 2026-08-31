@@ -1,0 +1,10 @@
+"""Modern dark theme palette for CustomTkinter UI."""
+
+BG = "#0f1419"
+FG = "#e7e9ea"
+CYAN = "#1d9bf0"
+ACCENT = "#7856ff"
+MUTED = "#71767b"
+SUCCESS = "#22c55e"
+WARNING = "#f59e0b"
+ERROR = "#ef4444"

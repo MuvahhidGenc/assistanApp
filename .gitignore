@@ -14,9 +14,10 @@ credentials.yaml
 .vscode/
 .idea/
 
-# HERMES runtime
+# HERMES runtime (audit logs — do NOT use HERMES/; Windows matches src/hermes/)
 *.log
-HERMES/
+**/HERMES/audit.log
+%LOCALAPPDATA%/
 
 # OS
 Thumbs.db
