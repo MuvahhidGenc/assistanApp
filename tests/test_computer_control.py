@@ -71,10 +71,14 @@ def test_sensitive_field_warning():
 @pytest.mark.asyncio
 async def test_open_app_tool_mocked():
     tool = OpenAppTool()
-    with patch("hermes.tools.windows.input_backend.open_application", return_value={"app": "chrome", "pid": 99}):
+    with patch(
+        "hermes.tools.windows.computer_control.open_application",
+        return_value={"app": "chrome", "pid": 99, "reused": True, "verified": True},
+    ):
         result = await tool.execute(app="chrome")
     assert result.success
     assert result.output["app"] == "chrome"
+    assert result.verified is True
 
 
 @pytest.mark.asyncio

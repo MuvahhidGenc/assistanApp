@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from pathlib import Path
 
-from hermes.tools.manifest import LocalToolRequest, extract_url_hint
+from hermes.tools.manifest import LocalToolRequest, _looks_like_local_filename, extract_url_hint
 
 _TEVHID_CONTENT = (
     "Tevhid, Islam inancinin temelidir: Allah Teala'nin zat, sifat, fiil ve ibadetlerde "
@@ -126,6 +126,22 @@ def match_local_intent(message: str) -> LocalIntent | None:
     folder = _match_create_folder(text, lower)
     if folder:
         return folder
+
+    from hermes.agent.application_catalog import resolve_application, resolve_web_url
+
+    web_url = resolve_web_url(text)
+    if web_url:
+        return LocalIntent(
+            LocalToolRequest("open_url", {"url": web_url}),
+            summary=f"{web_url} acilacak.",
+        )
+    app = resolve_application(text)
+    if app:
+        return LocalIntent(
+            LocalToolRequest("open_app", {"app": app}),
+            summary=f"{app} acilacak.",
+        )
+
     opened = _match_open_path(text, lower)
     if opened:
         return opened
@@ -134,21 +150,13 @@ def match_local_intent(message: str) -> LocalIntent | None:
         return install
     if re.search(r"https?://|www\.|\.com|\.net|\.org|git\b", lower):
         url = extract_url_hint(text) or _extract_youtube_url(text)
-        if url:
+        if url and not _looks_like_local_filename(url):
             href = url if "://" in url else f"https://{url}"
             autoplay = "youtube" in href.lower() or "youtu.be" in href.lower()
             args = {"url": href}
             if autoplay:
                 args["autoplay"] = True
             return LocalIntent(LocalToolRequest("open_url", args), f"{href} acilacak.")
-        return None
-    app = _match_open_app(lower)
-    if app:
-        return LocalIntent(
-            LocalToolRequest("open_app", {"app": app}),
-            summary=f"{app} acilacak.",
-        )
-
     return None
 
 
@@ -201,22 +209,48 @@ def guess_install_action(message: str) -> LocalIntent | None:
     )
 
 
-def guess_file_action(message: str) -> LocalIntent | None:
+def guess_file_action(
+    message: str,
+    *,
+    resolved_references: dict[str, str] | None = None,
+    conv_ctx: object | None = None,
+) -> LocalIntent | None:
     """High-priority file ops — run locally without waiting for Hermes server."""
     text = (message or "").strip()
     if not text:
         return None
+
+    from hermes.agent.task_planner import has_actionable_sequence, plan_local_sequence
+    from hermes.mission.write_content import is_literal_composite_file_mission
+
+    if is_literal_composite_file_mission(text):
+        return None
+
+    if has_actionable_sequence(text):
+        if len(plan_local_sequence(text)) >= 2:
+            return None
+
     lower = text.casefold()
+    refs = dict(resolved_references or {})
     for matcher in (_match_word_document, _match_delete_path, _match_write_file):
-        intent = matcher(text, lower)
+        intent = matcher(text, lower, resolved_references=refs, conv_ctx=conv_ctx)
         if intent:
             return intent
     return None
 
 
-def guess_local_action(message: str) -> LocalIntent | None:
+def guess_local_action(
+    message: str,
+    *,
+    resolved_references: dict[str, str] | None = None,
+    conv_ctx: object | None = None,
+) -> LocalIntent | None:
     """Route PC commands to local tools before asking Hermes."""
-    file_intent = guess_file_action(message)
+    file_intent = guess_file_action(
+        message,
+        resolved_references=resolved_references,
+        conv_ctx=conv_ctx,
+    )
     if file_intent:
         return file_intent
 
@@ -245,7 +279,7 @@ def guess_local_action(message: str) -> LocalIntent | None:
     if video:
         return video
     url = extract_url_hint(message) or _extract_youtube_url(message)
-    if url:
+    if url and not _looks_like_local_filename(url):
         href = url if "://" in url else f"https://{url}"
         autoplay = "youtube" in href.lower() or "youtu.be" in href.lower()
         args: dict = {"url": href}
@@ -258,7 +292,15 @@ def guess_local_action(message: str) -> LocalIntent | None:
     install = _match_install_program(message, lower)
     if install:
         return install
-    app = _match_open_app(lower) or _loose_app(lower)
+    from hermes.agent.application_catalog import resolve_application, resolve_web_url
+
+    web_url = resolve_web_url(message)
+    if web_url:
+        return LocalIntent(
+            LocalToolRequest("open_url", {"url": web_url}),
+            summary=f"{web_url} acilacak.",
+        )
+    app = resolve_application(message) or _match_open_app(message) or _loose_app(lower)
     if app:
         return LocalIntent(LocalToolRequest("open_app", {"app": app}), f"{app} acilacak.")
     if re.search(r"sistem|bilgisayar|cpu|ram", lower):
@@ -270,6 +312,14 @@ def guess_local_action(message: str) -> LocalIntent | None:
     interactive = _match_interactive_control(message, lower)
     if interactive:
         return interactive
+    opened = _match_open_path(
+        message,
+        lower,
+        conv_ctx=conv_ctx,
+        resolved_references=resolved_references or {},
+    )
+    if opened:
+        return opened
     return None
 
 
@@ -442,35 +492,128 @@ def _match_video_intent(text: str, lower: str) -> LocalIntent | None:
 
 
 def _match_create_folder(text: str, lower: str) -> LocalIntent | None:
-    if not re.search(r"klasor|klasör|folder|dizin", lower):
-        return None
-    if not re.search(r"\b(olustur|oluştur|yarat|create)\b", lower):
-        return None
-    path_match = re.search(
-        r"(?:masa[uü]st(?:u|ü)(?:nde|de)?\s+)?([\w\s.-]+?)\s+klasor(?:u|yu|unu|ünü)?\s+(?:olustur|oluştur|yarat|create)",
-        text,
-        re.IGNORECASE,
+    from hermes.context.folder_reference import (
+        is_folder_create_message,
+        is_folder_open_only_message,
+        resolve_create_folder_path,
     )
-    if path_match:
-        folder_name = path_match.group(1).strip(" .")
-        if re.search(r"masa[uü]st", lower):
-            from pathlib import Path
 
-            path = str(Path.home() / "Desktop" / folder_name)
-        else:
-            path = folder_name
-        return LocalIntent(
-            LocalToolRequest("create_folder", {"path": path}),
-            summary=f"Klasor olusturulacak: {path}",
-        )
+    if is_folder_open_only_message(text):
+        return None
+    if not is_folder_create_message(text):
+        return None
+
+    folder_path = resolve_create_folder_path(text)
+    if not folder_path:
+        return None
+
     return LocalIntent(
-        LocalToolRequest("create_folder", {"path": "Hermes"}),
-        summary="Masaustunde Hermes klasoru olusturulacak.",
+        LocalToolRequest("create_folder", {"path": folder_path}),
+        summary=f"Klasor olusturulacak: {folder_path}",
     )
 
 
-def _match_open_path(text: str, lower: str) -> LocalIntent | None:
-    if not re.search(r"\b(ac|aç|open|goster|göster|baslat|başlat)\b", lower):
+def _match_open_path(
+    text: str,
+    lower: str,
+    **kwargs: object,
+) -> LocalIntent | None:
+    from hermes.agent.application_catalog import (
+        has_explicit_filename,
+        is_web_or_app_open_message,
+        resolve_application,
+        resolve_web_url,
+    )
+
+    if is_web_or_app_open_message(text) and not has_explicit_filename(text):
+        web_url = resolve_web_url(text)
+        if web_url:
+            return LocalIntent(
+                LocalToolRequest("open_url", {"url": web_url}),
+                summary=f"{web_url} acilacak.",
+            )
+        app = resolve_application(text)
+        if app:
+            return LocalIntent(
+                LocalToolRequest("open_app", {"app": app}),
+                summary=f"{app} acilacak.",
+            )
+        return None
+
+    conv_ctx = kwargs.get("conv_ctx")
+    resolved = kwargs.get("resolved_references") or {}
+    if isinstance(resolved, dict) and resolved.get("target_file"):
+        path = str(resolved["target_file"])
+        if re.search(r"(?:ac|aç|open)", lower):
+            return LocalIntent(
+                LocalToolRequest("open_path", {"path": path}),
+                summary=f"Acilacak: {path}",
+            )
+    if isinstance(resolved, dict) and resolved.get("target_folder"):
+        path = str(resolved["target_folder"])
+        if re.search(r"(?:ac|aç|open)", lower):
+            return LocalIntent(
+                LocalToolRequest("open_path", {"path": path}),
+                summary=f"Klasor acilacak: {path}",
+            )
+    if conv_ctx is not None and re.search(
+        r"klasor|klasör|folder|dizin", lower
+    ) and re.search(r"(?:ac|aç|open)", lower):
+        from hermes.context.goal_resolution import parse_open_folder_goal
+        from hermes.context.reference_resolver import _normalize_existing_path
+
+        explicit = parse_open_folder_goal(text)
+        if explicit is not None:
+            existing = _normalize_existing_path(str(explicit.path))
+            if existing:
+                return LocalIntent(
+                    LocalToolRequest("open_path", {"path": str(existing)}),
+                    summary=f"Klasor acilacak: {existing}",
+                )
+            return LocalIntent(
+                LocalToolRequest("open_path", {"path": str(explicit.path)}),
+                summary=f"Klasor acilacak: {explicit.path}",
+            )
+
+        folder = getattr(conv_ctx, "active_folder", None) or getattr(
+            conv_ctx, "last_created_folder", None
+        )
+        if folder and not re.search(r"\b(olustur|oluştur|yaz|create)\b", lower):
+            existing = _normalize_existing_path(str(folder))
+            if existing:
+                return LocalIntent(
+                    LocalToolRequest("open_path", {"path": str(existing)}),
+                    summary=f"Klasor acilacak: {existing}",
+                )
+    if conv_ctx is not None and re.search(r"dosya", lower) and re.search(
+        r"(?:ac|aç|open)", lower
+    ):
+        if has_explicit_filename(text):
+            explicit = re.search(r"\b([\w\d_.-]+\.(?:txt|md|docx|pdf))\b", text, re.IGNORECASE)
+            if explicit:
+                from hermes.context.reference_resolver import _normalize_existing_path
+
+                file_name = explicit.group(1)
+                for base in (
+                    getattr(conv_ctx, "active_folder", None),
+                    Path.home() / "Desktop",
+                ):
+                    if not base:
+                        continue
+                    candidate = Path(str(base)) / file_name
+                    existing = _normalize_existing_path(str(candidate))
+                    if existing:
+                        return LocalIntent(
+                            LocalToolRequest("open_path", {"path": str(existing)}),
+                            summary=f"Acilacak: {existing}",
+                        )
+        active = getattr(conv_ctx, "active_file", None)
+        if active and not re.search(r"\b(olustur|oluştur|yaz|create)\b", lower):
+            return LocalIntent(
+                LocalToolRequest("open_path", {"path": str(active)}),
+                summary=f"Acilacak: {active}",
+            )
+    if not re.search(r"(?:ac|aç|open|baslat|başlat)\b", lower):
         return None
     if not re.search(r"klasor|klasör|folder|dizin|dosya", lower):
         return None
@@ -489,6 +632,15 @@ def _match_open_path(text: str, lower: str) -> LocalIntent | None:
         text,
         re.IGNORECASE,
     )
+    from hermes.context.goal_resolution import parse_open_folder_goal
+
+    explicit = parse_open_folder_goal(text)
+    if explicit is not None:
+        path = str(explicit.path)
+        return LocalIntent(
+            LocalToolRequest("open_path", {"path": path}),
+            summary=f"Klasor acilacak: {path}",
+        )
     if folder_match:
         name = folder_match.group(1).strip(" .")
         path = str(desktop / name) if name else str(desktop)
@@ -547,33 +699,16 @@ def _loose_app(lower: str) -> str | None:
     return None
 
 
-def _match_open_app(lower: str) -> str | None:
-    if not re.search(r"\b(ac|aç|open|baslat|başlat)\b", lower):
-        return None
-    for name in ("chrome", "edge", "firefox", "notepad", "explorer", "spotify", "discord"):
-        if name in lower:
-            return name
-    return None
+def _match_open_app(text: str) -> str | None:
+    from hermes.agent.application_catalog import resolve_application
+
+    return resolve_application(text)
 
 
 def _extract_desktop_path(text: str, lower: str) -> str | None:
-    direct = re.search(r"([\w][\w\s.-]*[/\\][\w\s.-]+\.(?:docx|txt|md))", text, re.IGNORECASE)
-    if direct:
-        return direct.group(1).replace("\\", "/").strip()
-    folder_match = re.search(
-        r"\b([\w\d_-]+)\s*(?:klasor|klasör|klasoru|klasörü|folder)\b",
-        lower,
-    )
-    folder = folder_match.group(1) if folder_match else ""
-    name_match = re.search(r"\b([\w.-]+)\.(docx|txt|md)\b", lower)
-    if name_match:
-        name = f"{name_match.group(1)}.{name_match.group(2)}"
-        return f"{folder}/{name}" if folder else name
-    stem_match = re.search(r"\b([\w.-]+)\s+word\b", lower)
-    if stem_match:
-        stem = stem_match.group(1)
-        return f"{folder}/{stem}.docx" if folder else f"{stem}.docx"
-    return None
+    from hermes.context.folder_reference import extract_desktop_relative_file_path
+
+    return extract_desktop_relative_file_path(text)
 
 
 def _word_content_for_message(text: str, lower: str, path: str) -> tuple[str, str]:
@@ -595,7 +730,7 @@ def _word_content_for_message(text: str, lower: str, path: str) -> tuple[str, st
     return title, body
 
 
-def _match_word_document(text: str, lower: str) -> LocalIntent | None:
+def _match_word_document(text: str, lower: str, **kwargs: object) -> LocalIntent | None:
     if not re.search(r"\b(word|docx|\.docx)\b", lower):
         return None
     if not re.search(
@@ -616,7 +751,7 @@ def _match_word_document(text: str, lower: str) -> LocalIntent | None:
     )
 
 
-def _match_delete_path(text: str, lower: str) -> LocalIntent | None:
+def _match_delete_path(text: str, lower: str, **kwargs: object) -> LocalIntent | None:
     if not re.search(r"\b(sil|delete|kaldir|kaldır|remove|temizle)\b", lower):
         return None
     path = _extract_desktop_path(text, lower)
@@ -644,32 +779,93 @@ def _match_delete_path(text: str, lower: str) -> LocalIntent | None:
     )
 
 
-def _match_write_file(text: str, lower: str) -> LocalIntent | None:
-    if not re.search(r"\b(txt|metin|text file|\.txt)\b", lower):
+def _match_write_file(
+    text: str,
+    lower: str,
+    *,
+    resolved_references: dict[str, str] | None = None,
+    conv_ctx: object | None = None,
+) -> LocalIntent | None:
+    from hermes.context.content_extraction import extract_content_modification
+    from hermes.mission.write_content import extract_literal_write_content, resolve_write_file_content
+
+    refs = dict(resolved_references or {})
+    hint = extract_literal_write_content(text)
+    has_txt = bool(re.search(r"\b(txt|metin|text file|\.txt)\b", lower))
+    has_write_verb = bool(re.search(r"\b(olustur|oluştur|yaz|create|degistir|değiştir|guncelle|güncelle)\b", lower))
+    has_literal_write = bool(hint.literal_content and re.search(r"\b(yaz|write)\b", lower))
+    has_inner_write = bool(re.search(r"içine|icerige|icerik", lower))
+    content_only = bool(
+        re.search(r"içeriğini|icerigini", lower)
+        and not re.search(r"\b(olustur|oluştur|yarat|create)\b", lower)
+    )
+
+    if content_only:
         return None
-    if not re.search(r"\b(olustur|oluştur|yaz|create)\b", lower):
+
+    if not has_write_verb:
         return None
-    path = _extract_desktop_path(text, lower) or "notlar.txt"
+    if not (has_txt or has_literal_write or has_inner_write):
+        return None
+
+    path = _extract_desktop_path(text, lower)
+    if not path:
+        if refs.get("target_file"):
+            path = refs["target_file"]
+        elif conv_ctx is not None and getattr(conv_ctx, "active_file", None):
+            path = getattr(conv_ctx, "active_file")
+        elif refs.get("target_folder"):
+            file_name = _extract_filename_hint(text, lower)
+            if file_name:
+                from pathlib import Path
+
+                path = str(Path(refs["target_folder"]) / file_name)
+    if not path:
+        return None
     if not path.lower().endswith(".txt"):
-        path = f"{path}.txt"
-    content_match = re.search(r"(?:icerik|içerik|yaz)\s*[:\-]?\s*(.+)$", text, re.IGNORECASE)
-    content = content_match.group(1).strip() if content_match else "HERMES tarafindan olusturuldu."
+        from pathlib import Path as _Path
+
+        path = f"{path}.txt" if "." not in _Path(path).name else path
+
+    content = extract_literal_write_content(text).literal_content
+    if content is None:
+        content = extract_content_modification(text)
+    if content is None:
+        content = resolve_write_file_content(text)
+    if content is None:
+        return None
+    from hermes.mission.write_content import is_placeholder_write_content
+
+    if is_placeholder_write_content(content):
+        return None
     return LocalIntent(
         LocalToolRequest("write_file", {"path": path, "content": content}),
         summary=f"Metin dosyasi yazilacak: {path}",
     )
 
 
+def _extract_filename_hint(text: str, lower: str) -> str | None:
+    match = re.search(r"\b([\w\d_.-]+\.(?:txt|md))\b", text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b([\w\d_.-]+)\.txt\b", lower)
+    if match:
+        return match.group(0)
+    return None
+
+
 def summarize_local_result(intent: LocalIntent, result: object) -> str:
     success = bool(getattr(result, "success", False))
     error = getattr(result, "error", None)
     output = getattr(result, "output", None)
+    name = intent.request.name
     if not success:
         err = str(error or "")
+        if name == "open_path":
+            return f"Acilamadi: {err or 'bilinmeyen hata'}"
         if "uac" in err.lower() or "yonetici" in err.lower() or "yönetici" in err.lower():
             return f"DNS ayarlanamadi: Windows yonetici izni (UAC) gerekli. UAC penceresini de onayla."
         return f"Islem yapilamadi: {error or 'bilinmeyen hata'}"
-    name = intent.request.name
     if name == "set_dns" and isinstance(output, dict):
         servers = output.get("servers") or []
         adapter = output.get("adapter") or "ag karti"
@@ -699,13 +895,19 @@ def summarize_local_result(intent: LocalIntent, result: object) -> str:
     if name == "get_disk_info":
         return "Disk bilgisi okundu. Detay sohbette."
     if name == "open_app":
-        return intent.summary.replace("acilacak", "acildi")
+        from hermes.agent.user_messages import format_open_app_message
+
+        return format_open_app_message(intent, result)
     if name == "open_url":
         return intent.summary.replace("acilacak", "acildi")
     if name == "create_folder" and isinstance(output, dict):
-        return f"Klasor hazir: {output.get('path', intent.summary)}"
+        from hermes.agent.user_messages import format_create_folder_message
+
+        return format_create_folder_message(intent, result)
     if name == "open_path" and isinstance(output, dict):
-        return f"Acildi: {output.get('path', intent.summary)}"
+        from hermes.agent.user_messages import format_open_path_message
+
+        return format_open_path_message(intent, result)
     if name == "scroll":
         return "Sayfa kaydirildi."
     if name == "click_text" and isinstance(output, dict):
@@ -750,13 +952,29 @@ def summarize_local_result(intent: LocalIntent, result: object) -> str:
             f"Word hazir: {output.get('path')} ({output.get('size', 0)} byte). "
             f"Klasor dogrulama: {names or 'ok'}"
         )
-    if name == "write_file" and isinstance(output, dict):
-        return f"Dosya yazildi: {output.get('path')} ({output.get('size', 0)} byte)"
-    if name == "delete_path" and isinstance(output, dict):
-        exists = output.get("exists_after")
-        return f"Silindi: {output.get('path')} (exists_after={exists})"
-    if name == "list_directory" and isinstance(output, dict):
-        entries = output.get("entries") or []
-        names = ", ".join(str(item.get("name")) for item in entries[:8])
-        return f"{output.get('path')}: {names or '(bos)'}"
+    if name == "write_file":
+        if "guncellenecek" in (intent.summary or "").casefold():
+            from hermes.agent.user_messages import format_modify_content_message
+
+            return format_modify_content_message(intent, result)
+        from hermes.agent.user_messages import format_write_file_message
+
+        return format_write_file_message(intent, result)
+    if name == "rename_path":
+        from hermes.agent.user_messages import format_rename_path_message
+
+        return format_rename_path_message(intent, result)
+    if name == "delete_path":
+        from hermes.agent.user_messages import format_delete_path_message
+
+        return format_delete_path_message(intent, result)
+    if name == "list_directory":
+        from hermes.agent.user_messages import format_list_directory_message
+
+        return format_list_directory_message(intent, result)
+    if name == "read_file" and isinstance(output, dict):
+        content = str(output.get("content") or "").strip()
+        if content:
+            return content if len(content) <= 4000 else content[:3997] + "..."
+        return "Dosya okundu ancak icerik bos."
     return intent.summary.replace("olacak", "tamamlandi")

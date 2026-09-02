@@ -23,9 +23,14 @@ def _all_windows_tools() -> list[BaseTool]:
     )
     from hermes.tools.windows.debug_tools import EchoTool
     from hermes.tools.windows.file_tools import (
+        CopyFileTool,
         CreateWordDocumentTool,
         DeletePathTool,
         ListDirectoryTool,
+        MoveFileTool,
+        ReadFileTool,
+        RenamePathTool,
+        SearchFilesTool,
         WriteFileTool,
     )
     from hermes.tools.windows.diagnostic_tools import QueryEventLogTool, ReadRegistryTool
@@ -105,6 +110,11 @@ def _all_windows_tools() -> list[BaseTool]:
         GetSystemInfoTool(),
         ListInstalledProgramsTool(),
         ListDirectoryTool(),
+        ReadFileTool(),
+        CopyFileTool(),
+        MoveFileTool(),
+        RenamePathTool(),
+        SearchFilesTool(),
         WriteFileTool(),
         CreateWordDocumentTool(),
         DeletePathTool(),

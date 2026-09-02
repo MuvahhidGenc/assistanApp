@@ -90,6 +90,10 @@ def preprocess_for_ocr(image: Any) -> Any:
         return image
 
 
+def _text_quality(text: str) -> int:
+    return sum(1 for ch in (text or "") if ch.isalpha())
+
+
 def ocr_image(image: Any, lang: str = "tur+eng") -> str:
     import pytesseract
 
@@ -98,11 +102,128 @@ def ocr_image(image: Any, lang: str = "tur+eng") -> str:
     os.environ["TESSDATA_PREFIX"] = str(tessdata.parent) + os.sep
     config = f"--tessdata-dir {tessdata.as_posix()}"
     prepared = preprocess_for_ocr(image)
-    try:
-        text = pytesseract.image_to_string(prepared, lang=lang, config=config)
-    except Exception:
-        text = pytesseract.image_to_string(prepared, lang="eng", config=config)
-    return str(text or "").strip()
+    candidates: list[str] = []
+    for candidate_image in (image, prepared):
+        try:
+            text = pytesseract.image_to_string(candidate_image, lang=lang, config=config)
+        except Exception:
+            text = pytesseract.image_to_string(candidate_image, lang="eng", config=config)
+        cleaned = str(text or "").strip()
+        if cleaned:
+            candidates.append(cleaned)
+    if not candidates:
+        return ""
+    return max(candidates, key=_text_quality)
+
+
+def ocr_browser_window(
+    app: str = "chrome",
+    *,
+    title_hint: str = "",
+    include_boxes: bool = True,
+    lang: str = "tur+eng",
+) -> dict[str, Any]:
+    """Focus browser window and OCR its client area via PrintWindow."""
+    import time
+
+    from PIL import Image
+
+    from hermes.tools.windows.input_backend import (
+        capture_window_image,
+        find_app_window_title,
+        focus_window,
+    )
+
+    hint = (title_hint or "").strip()
+    title = find_app_window_title(app, title_hint=hint) or find_app_window_title("edge", title_hint=hint)
+    region: tuple[int, int, int, int] | None = None
+    capture_meta: dict[str, Any] = {}
+    text = ""
+    error = ""
+    boxes: list[dict[str, Any]] = []
+    shot: dict[str, Any] = {}
+    capture_method = ""
+
+    if title:
+        try:
+            focus_window(title, partial=True)
+            time.sleep(0.35)
+        except ValueError:
+            pass
+        except Exception as exc:
+            logger.info("browser_window_focus_skip", error=str(exc))
+
+        for crop in (96, 0):
+            try:
+                captured = capture_window_image(title, partial=True, chrome_crop=crop)
+                capture_meta = captured
+                capture_method = str(captured.get("capture_method") or "printwindow")
+                shot = {
+                    "path": captured.get("path"),
+                    "width": captured.get("width"),
+                    "height": captured.get("height"),
+                    "format": captured.get("format") or "png",
+                }
+                path = str(captured.get("path") or "")
+                if path and Path(path).is_file():
+                    image = Image.open(path)
+                    text = ocr_image(image, lang=lang)[:4000]
+                    if include_boxes:
+                        boxes = ocr_word_boxes(image, lang=lang)
+                if text or boxes:
+                    break
+            except Exception as exc:
+                logger.info("browser_printwindow_capture_skip", crop=crop, error=str(exc))
+
+        if not text and not boxes:
+            try:
+                import pygetwindow as gw
+
+                matches = [w for w in gw.getAllWindows() if title.lower() in (w.title or "").lower()]
+                if matches:
+                    window = matches[0]
+                    chrome_offset = 96 if "chrome" in (window.title or "").casefold() else 80
+                    width = max(int(window.width), 200)
+                    height = max(int(window.height) - chrome_offset, 200)
+                    region = (
+                        max(int(window.left), 0),
+                        max(int(window.top) + chrome_offset, 0),
+                        width,
+                        height,
+                    )
+            except Exception as exc:
+                logger.info("browser_window_region_skip", error=str(exc))
+
+    if not text and not boxes:
+        data = ocr_screen(region=region, lang=lang, include_boxes=include_boxes)
+        text = str(data.get("text") or "")
+        boxes = list(data.get("boxes") or [])
+        shot = dict(data.get("screenshot") or {})
+        error = str(data.get("error") or "")
+        capture_method = capture_method or "imagegrab_region"
+
+    lines = _boxes_to_lines(boxes) if boxes else []
+    payload = {
+        "screenshot": shot,
+        "text": text,
+        "ocr": bool(text),
+        "error": error,
+        "boxes": boxes,
+        "lines": lines,
+    }
+    if title:
+        payload["window_title"] = title
+    payload["content_type"] = "screen_text" if text or lines else "browser_window"
+    payload["ocr_region"] = region
+    payload["browser_app"] = app
+    payload["capture_method"] = capture_method or ("printwindow" if capture_meta else "imagegrab")
+    if capture_meta:
+        payload["window_rect"] = capture_meta.get("window_rect")
+        payload["printwindow_ok"] = capture_meta.get("printwindow_ok")
+        payload["chrome_crop"] = capture_meta.get("chrome_crop")
+    if hint:
+        payload["title_hint"] = hint
+    return payload
 
 
 def ocr_screen(

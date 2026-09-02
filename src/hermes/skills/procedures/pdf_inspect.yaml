@@ -1,0 +1,19 @@
+id: pdf_inspect
+title: PDF inceleme ve ayirma
+goal_patterns:
+  - pdf incele
+  - pdfleri incele
+  - pdf bul
+  - onemli pdf
+  - önemli pdf
+preferred_tools:
+  - search_files
+  - create_folder
+  - copy_file
+  - list_directory
+security_level: normal
+hints:
+  - Indirilenler veya belirtilen klasorde PDF ara.
+  - Onemli dosyalari ayri klasore kopyala ve dogrula.
+validation_rules:
+  - search_files_filesystem dogrulamasi gerekli

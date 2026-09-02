@@ -115,7 +115,33 @@ def set_api_key(api_key: str) -> None:
 
 
 def get_elevenlabs_api_key() -> str:
+    key, _ = resolve_elevenlabs_api_key()
+    return key
+
+
+def resolve_elevenlabs_api_key(*, config_value: str = "") -> tuple[str, str]:
+    """
+    Resolve ElevenLabs API key from env, credentials file, or inline settings.
+
+    Returns (key, source) where source is one of:
+    environment | credentials_file | settings | missing
+    """
     env_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     if env_key:
-        return env_key
-    return load_credentials().get("elevenlabs_api_key", "")
+        return env_key, "environment"
+    file_key = load_credentials().get("elevenlabs_api_key", "").strip()
+    if file_key:
+        return file_key, "credentials_file"
+    inline = str(config_value or "").strip()
+    if inline:
+        return inline, "settings"
+    return "", "missing"
+
+
+def elevenlabs_key_hint() -> str:
+    path = credentials_path()
+    return (
+        "ElevenLabs API anahtari bulunamadi. "
+        f"ELEVENLABS_API_KEY ortam degiskenini ayarlayin veya {path} dosyasina "
+        "elevenlabs_api_key ekleyin."
+    )

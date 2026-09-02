@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import certifi
 
 root = Path(SPECPATH)
 entry = root / "src" / "hermes" / "entry_tray.py"
@@ -17,6 +18,7 @@ if (root / "assets" / "tray.png").exists():
 
 datas += collect_data_files("customtkinter")
 datas += collect_data_files("edge_tts")
+datas += [(certifi.where(), "certifi")]
 
 hiddenimports = collect_submodules("customtkinter")
 hiddenimports += collect_submodules("edge_tts")

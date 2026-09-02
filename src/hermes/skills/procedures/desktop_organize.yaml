@@ -1,0 +1,23 @@
+id: desktop_organize
+title: Masaustu / klasor duzenleme
+goal_patterns:
+  - masaustunu duzenle
+  - masaüstünü düzenle
+  - masaustu duzenle
+  - masaüstümü
+  - masaustumu
+  - desktop duzenle
+  - dosyalari duzenle
+  - dosyaları düzenle
+preferred_tools:
+  - list_directory
+  - search_files
+  - create_folder
+  - copy_file
+security_level: normal
+hints:
+  - Once mevcut dosyalari gozlemle, sonra turlerine gore klasorlere ayir.
+  - Her tasima sonrasi filesystem dogrulamasi yap.
+validation_rules:
+  - Kaynak konum list_directory ile taranmali
+  - Duzenleme sonrasi hedef klasorler dogrulanmali

@@ -4,10 +4,12 @@ import asyncio
 import os
 import tempfile
 import threading
+import traceback
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from hermes.utils.logging import get_logger
+from hermes.voice.tts_trace import trace_fields
 
 logger = get_logger(__name__)
 
@@ -15,6 +17,12 @@ DEFAULT_EDGE_VOICE = "tr-TR-AhmetNeural"
 DEFAULT_ELEVENLABS_VOICE = "pNInz6obpgDQGcFmaJgB"
 DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+
+def _audit(event: str, **fields: Any) -> None:
+    """Structured TTS pipeline audit — visible in application logs."""
+    safe = trace_fields(**{key: value for key, value in fields.items() if value is not None})
+    logger.info(event, **safe)
 
 
 class TextToSpeech(Protocol):
@@ -32,7 +40,7 @@ class NullTextToSpeech:
     def is_available(self) -> bool:
         return False
 
-    def speak(self, text: str) -> None:
+    async def speak(self, text: str) -> None:
         return None
 
     def stop(self) -> None:
@@ -40,32 +48,58 @@ class NullTextToSpeech:
 
 
 class FallbackTextToSpeech:
-    """Try primary TTS, then secondary (e.g. ElevenLabs -> Edge)."""
+    """Try primary TTS, then secondary (e.g. ElevenLabs -> Edge -> Windows SAPI)."""
 
-    def __init__(self, primary: TextToSpeech, secondary: TextToSpeech) -> None:
-        self._primary = primary
-        self._secondary = secondary
+    def __init__(self, *backends: TextToSpeech) -> None:
+        self._backends = tuple(backends)
+        self._speak_lock = asyncio.Lock()
 
     def is_available(self) -> bool:
-        return self._primary.is_available() or self._secondary.is_available()
+        return any(backend.is_available() for backend in self._backends)
 
     def stop(self) -> None:
-        self._primary.stop()
-        self._secondary.stop()
+        for backend in self._backends:
+            backend.stop()
 
     async def speak(self, text: str) -> None:
         cleaned = text.strip()
         if not cleaned:
             return
-        for backend in (self._primary, self._secondary):
-            if not backend.is_available():
-                continue
-            try:
-                await backend.speak(cleaned)
-                return
-            except Exception as exc:
-                logger.warning("tts_backend_failed", error=str(exc))
-        logger.warning("tts_all_backends_failed", chars=len(cleaned))
+        async with self._speak_lock:
+            _audit("TTS_REQUEST", chars=len(cleaned))
+            errors: list[str] = []
+            for backend in self._backends:
+                backend_name = type(backend).__name__
+                if not backend.is_available():
+                    if backend_name == "ElevenLabsTTS":
+                        _audit("ELEVENLABS_SKIPPED_NO_KEY")
+                    elif backend_name == "WindowsSapiTTS":
+                        _audit("WINDOWS_SAPI_SKIPPED_UNAVAILABLE")
+                    else:
+                        _audit("EDGE_SKIPPED_UNAVAILABLE")
+                    continue
+                try:
+                    _audit("TTS_BACKEND_SELECTED", backend=backend_name)
+                    _audit("BACKEND_SELECTED", backend=backend_name)
+                    await backend.speak(cleaned)
+                    _audit("PLAYBACK_COMPLETED", backend=backend_name, chars=len(cleaned))
+                    return
+                except Exception as exc:
+                    err = f"{backend_name}={type(exc).__name__}: {exc}"
+                    errors.append(err)
+                    _audit(
+                        "PLAYBACK_FAILED",
+                        backend=backend_name,
+                        exception_type=type(exc).__name__,
+                        exception_message=str(exc),
+                        traceback=traceback.format_exc()[-1200:],
+                    )
+            _audit(
+                "TTS_ALL_BACKENDS_FAILED",
+                chars=len(cleaned),
+                errors=" | ".join(errors),
+            )
+            raise RuntimeError(errors[-1] if errors else "TTS backends failed")
 
 
 def pick_edge_voice(preferred: str = "", gender: str = "male") -> str:
@@ -75,20 +109,34 @@ def pick_edge_voice(preferred: str = "", gender: str = "male") -> str:
     return voice or DEFAULT_EDGE_VOICE
 
 
-def _run_coro(coro) -> None:
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(coro)
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
+class PlaybackError(RuntimeError):
+    pass
 
 
-def _play_mp3_powershell(path: str) -> bool:
-    from hermes.platform.subprocess_win import run_hidden
+def _play_mp3_powershell(path: str) -> None:
+    """Play MP3 via PowerShell System.Windows.Media.MediaPlayer. Raises PlaybackError."""
+    import subprocess
 
-    uri = Path(path).resolve().as_uri()
+    from hermes.platform.subprocess_win import hidden_creationflags, hidden_startupinfo
+
+    mp3 = Path(path)
+    if not mp3.exists():
+        raise PlaybackError(f"AUDIO_FILE_MISSING path={path}")
+    size = mp3.stat().st_size
+    _audit("AUDIO_FILE_CREATED", path=str(mp3.resolve()), bytes=size)
+    _audit("MP3_CREATED", path=str(mp3.resolve()), bytes=size)
+    if size < 32:
+        raise PlaybackError(f"AUDIO_FILE_EMPTY bytes={size}")
+
+    uri = mp3.resolve().as_uri()
+    thread_name = threading.current_thread().name
+    _audit(
+        "PLAYBACK_STARTED",
+        path=str(mp3.resolve()),
+        uri=uri,
+        mechanism="powershell_mediaplayer",
+        thread=thread_name,
+    )
     script = (
         f"Add-Type -AssemblyName presentationCore; "
         f"$m = New-Object System.Windows.Media.MediaPlayer; "
@@ -101,27 +149,85 @@ def _play_mp3_powershell(path: str) -> bool:
         f"{{ Start-Sleep -Milliseconds 120 }}; "
         f"$m.Stop(); $m.Close()"
     )
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]
     try:
-        proc = run_hidden(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True,
-            timeout=120,
-            check=False,
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            startupinfo=hidden_startupinfo(),
+            creationflags=hidden_creationflags(),
         )
-        if proc.returncode != 0:
-            logger.warning(
-                "tts_powershell_play_failed",
-                code=proc.returncode,
-                stderr=(proc.stderr or b"").decode("utf-8", errors="replace")[:300],
-            )
-        return proc.returncode == 0
+        _audit(
+            "PLAYBACK_PROCESS_STARTED",
+            mechanism="powershell_mediaplayer",
+            pid=proc.pid,
+            thread=thread_name,
+        )
+        stdout_b, stderr_b = proc.communicate(timeout=120)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        _audit(
+            "PLAYBACK_FAILED",
+            mechanism="powershell_mediaplayer",
+            reason="timeout",
+            thread=thread_name,
+        )
+        raise PlaybackError("powershell playback timed out") from exc
     except Exception as exc:
-        logger.warning("tts_powershell_play_failed", error=str(exc))
-        return False
+        _audit(
+            "PLAYBACK_FAILED",
+            mechanism="powershell_mediaplayer",
+            exception_type=type(exc).__name__,
+            exception_message=str(exc),
+            thread=thread_name,
+        )
+        raise PlaybackError(str(exc)) from exc
+
+    stderr = (stderr_b or b"").decode("utf-8", errors="replace").strip()
+    stdout = (stdout_b or b"").decode("utf-8", errors="replace").strip()
+    if returncode != 0:
+        _audit(
+            "PLAYBACK_FAILED",
+            mechanism="powershell_mediaplayer",
+            returncode=returncode,
+            stderr=stderr[:500],
+            stdout=stdout[:300],
+            thread=thread_name,
+        )
+        raise PlaybackError(
+            f"powershell rc={returncode} stderr={stderr[:300]} stdout={stdout[:200]}"
+        )
+    _audit(
+        "PLAYBACK_COMPLETED",
+        mechanism="powershell_mediaplayer",
+        path=str(mp3.resolve()),
+        thread=thread_name,
+    )
+    _audit("PLAYBACK_SUCCESS", mechanism="powershell_mediaplayer", path=str(mp3.resolve()))
+
+
+def _ssl_verification_error(exc: BaseException) -> bool:
+    text = str(exc).casefold()
+    if "certificate_verify_failed" in text or "sslcertverificationerror" in text:
+        return True
+    if "clientconnectorcertificateerror" in type(exc).__name__.casefold():
+        return True
+    return False
 
 
 class EdgeTurkishTTS:
-    """Microsoft Edge TTS — tr-TR-AhmetNeural fallback."""
+    """Microsoft Edge TTS — tr-TR-AhmetNeural."""
 
     def __init__(
         self,
@@ -140,7 +246,103 @@ class EdgeTurkishTTS:
 
             return True
         except Exception as exc:
-            logger.warning("tts_edge_unavailable", error=str(exc))
+            _audit(
+                "EDGE_SKIPPED_UNAVAILABLE",
+                exception_type=type(exc).__name__,
+                exception_message=str(exc),
+            )
+            return False
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def stop(self) -> None:
+        return None
+
+    async def _synthesize_mp3(self, text: str, *, insecure_ssl: bool = False) -> Path:
+        import edge_tts
+
+        if insecure_ssl:
+            from hermes.platform.runtime import configure_edge_tts_ssl_insecure
+
+            configure_edge_tts_ssl_insecure()
+            _audit("EDGE_SSL_RETRY_INSECURE")
+
+        handle, name = tempfile.mkstemp(suffix=".mp3")
+        os.close(handle)
+        tmp = Path(name)
+        _audit("EDGE_SYNTHESIS_START", voice=self._edge_voice, chars=len(text))
+        try:
+            communicate = edge_tts.Communicate(
+                text,
+                self._edge_voice,
+                rate="+4%",
+                pitch="+1Hz",
+            )
+            await communicate.save(str(tmp))
+            size = tmp.stat().st_size if tmp.exists() else 0
+            if not tmp.exists() or size < 32:
+                _audit("EDGE_SYNTHESIS_FAILED", bytes=size, reason="empty_mp3")
+                raise RuntimeError(f"edge TTS produced empty mp3 (bytes={size})")
+            _audit("EDGE_SYNTHESIS_SUCCESS", path=str(tmp), bytes=size)
+            _audit("MP3_CREATED", path=str(tmp), bytes=size)
+            return tmp
+        except Exception as exc:
+            _audit(
+                "EDGE_SYNTHESIS_FAILED",
+                exception_type=type(exc).__name__,
+                exception_message=str(exc),
+                traceback=traceback.format_exc()[-1200:],
+            )
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(f"edge TTS synthesis failed: {exc}") from exc
+
+    async def speak(self, text: str) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        if not self._available:
+            raise RuntimeError("edge TTS unavailable (edge-tts not importable)")
+        with self._lock:
+            tmp: Path | None = None
+            try:
+                _audit("TTS_REQUEST", backend="edge", chars=len(cleaned))
+                _audit("EDGE_FALLBACK_SELECTED", voice=self._edge_voice)
+                _audit("BACKEND_SELECTED", backend="EdgeTurkishTTS")
+                try:
+                    tmp = await self._synthesize_mp3(cleaned, insecure_ssl=False)
+                except RuntimeError as exc:
+                    if _ssl_verification_error(exc.__cause__ or exc):
+                        tmp = await self._synthesize_mp3(cleaned, insecure_ssl=True)
+                    else:
+                        raise
+                await asyncio.to_thread(_play_mp3_powershell, str(tmp))
+                _audit("tts_spoke", backend="edge", voice=self._edge_voice, chars=len(cleaned))
+            finally:
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
+
+
+class WindowsSapiTTS:
+    """Offline Windows speech via pyttsx3 — no network / SSL."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._available = self._probe()
+
+    def _probe(self) -> bool:
+        try:
+            import pyttsx3
+
+            engine = pyttsx3.init()
+            engine.stop()
+            return True
+        except Exception as exc:
+            _audit(
+                "WINDOWS_SAPI_SKIPPED_UNAVAILABLE",
+                exception_type=type(exc).__name__,
+                exception_message=str(exc),
+            )
             return False
 
     def is_available(self) -> bool:
@@ -150,43 +352,38 @@ class EdgeTurkishTTS:
         return None
 
     def _speak_sync(self, text: str) -> None:
-        cleaned = text.strip()
-        if not cleaned or not self._available:
-            return
-        with self._lock:
-            try:
-                import edge_tts
-            except Exception as exc:
-                logger.warning("tts_edge_import_failed", error=str(exc))
-                return
+        import pyttsx3
 
-            handle, name = tempfile.mkstemp(suffix=".mp3")
-            os.close(handle)
-            tmp = Path(name)
+        thread_name = threading.current_thread().name
+        _audit("PLAYBACK_STARTED", mechanism="windows_sapi", thread=thread_name)
+        _audit("PLAYBACK_PROCESS_STARTED", mechanism="windows_sapi", thread=thread_name)
+        engine = pyttsx3.init()
+        try:
+            for voice in engine.getProperty("voices"):
+                name = (voice.name or "").casefold()
+                if "turk" in name or "tr-" in name:
+                    engine.setProperty("voice", voice.id)
+                    break
+            engine.setProperty("rate", 165)
+            engine.say(text)
+            engine.runAndWait()
+        finally:
             try:
-                communicate = edge_tts.Communicate(
-                    cleaned,
-                    self._edge_voice,
-                    rate="+4%",
-                    pitch="+1Hz",
-                )
-                _run_coro(communicate.save(str(tmp)))
-                if not tmp.exists() or tmp.stat().st_size < 32:
-                    logger.warning("tts_edge_empty_mp3")
-                    return
-                if not _play_mp3_powershell(str(tmp)):
-                    logger.warning("tts_playback_failed")
-                    return
-                logger.info("tts_spoke", backend="edge", voice=self._edge_voice, chars=len(cleaned))
-            except Exception as exc:
-                logger.warning("tts_edge_failed", error=str(exc))
-            finally:
-                tmp.unlink(missing_ok=True)
+                engine.stop()
+            except Exception:
+                pass
+        _audit("PLAYBACK_COMPLETED", mechanism="windows_sapi", thread=thread_name)
+        _audit("PLAYBACK_SUCCESS", mechanism="windows_sapi")
 
     async def speak(self, text: str) -> None:
-        if not text.strip() or not self._available:
-            return
-        await asyncio.to_thread(self._speak_sync, text)
+        cleaned = text.strip()
+        if not cleaned or not self._available:
+            raise RuntimeError("Windows SAPI unavailable")
+        with self._lock:
+            _audit("TTS_REQUEST", backend="windows_sapi", chars=len(cleaned))
+            _audit("BACKEND_SELECTED", backend="WindowsSapiTTS")
+            await asyncio.to_thread(self._speak_sync, cleaned)
+            _audit("tts_spoke", backend="windows_sapi", chars=len(cleaned))
 
 
 class ElevenLabsTTS:
@@ -230,51 +427,91 @@ class ElevenLabsTTS:
                 "use_speaker_boost": True,
             },
         }
+        _audit(
+            "tts_elevenlabs_request",
+            voice_id=self._voice_id,
+            model=self._model_id,
+            chars=len(text),
+        )
         with httpx.Client(timeout=90.0) as client:
             response = client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
+            if response.status_code in (401, 403):
+                _audit(
+                    "tts_elevenlabs_auth_failed",
+                    status_code=response.status_code,
+                    detail=_elevenlabs_error_detail(response),
+                )
+                raise RuntimeError(
+                    f"ElevenLabs API anahtari reddedildi (HTTP {response.status_code})."
+                )
+            if response.status_code == 429:
+                _audit("tts_elevenlabs_rate_limited", status_code=429)
+                raise RuntimeError("ElevenLabs istek limiti asildi (HTTP 429).")
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                _audit(
+                    "tts_elevenlabs_http_error",
+                    status_code=exc.response.status_code,
+                    detail=_elevenlabs_error_detail(exc.response),
+                )
+                raise RuntimeError(
+                    f"ElevenLabs TTS basarisiz (HTTP {exc.response.status_code})."
+                ) from exc
             audio = response.content
         if len(audio) < 64:
+            _audit("tts_elevenlabs_empty_audio", bytes=len(audio))
             return None
         handle, name = tempfile.mkstemp(suffix=".mp3")
         os.close(handle)
         tmp = Path(name)
         tmp.write_bytes(audio)
+        _audit("tts_elevenlabs_audio_ready", bytes=len(audio))
+        _audit("MP3_CREATED", path=str(tmp), bytes=len(audio))
         return tmp
 
-    def _speak_sync(self, text: str) -> None:
+    async def speak(self, text: str) -> None:
         cleaned = text.strip()
         if not cleaned or not self._available:
             return
         with self._lock:
             tmp: Path | None = None
             try:
-                tmp = self._synthesize_mp3(cleaned)
+                _audit("TTS_REQUEST", backend="elevenlabs", chars=len(cleaned))
+                _audit("BACKEND_SELECTED", backend="ElevenLabsTTS")
+                tmp = await asyncio.to_thread(self._synthesize_mp3, cleaned)
                 if tmp is None or not tmp.exists():
                     raise RuntimeError("empty mp3 from elevenlabs")
-                if not _play_mp3_powershell(str(tmp)):
-                    raise RuntimeError("mp3 playback failed")
-                logger.info(
+                await asyncio.to_thread(_play_mp3_powershell, str(tmp))
+                _audit(
                     "tts_spoke",
                     backend="elevenlabs",
                     voice=self._voice_id,
                     chars=len(cleaned),
                 )
-            except Exception as exc:
-                logger.warning("tts_elevenlabs_failed", error=str(exc))
-                raise
             finally:
                 if tmp is not None:
                     tmp.unlink(missing_ok=True)
 
-    async def speak(self, text: str) -> None:
-        if not text.strip() or not self._available:
-            return
-        await asyncio.to_thread(self._speak_sync, text)
+
+def _elevenlabs_error_detail(response) -> str:
+    try:
+        body = response.text
+    except Exception:
+        return ""
+    return (body or "")[:240]
 
 
-Pyttsx3TextToSpeech = EdgeTurkishTTS
-WindowsTextToSpeech = EdgeTurkishTTS
+def _chain_with_sapi(*backends: TextToSpeech) -> TextToSpeech:
+    sapi = WindowsSapiTTS()
+    chain = [b for b in backends if b.is_available()]
+    if sapi.is_available():
+        chain.append(sapi)
+    if not chain:
+        return NullTextToSpeech()
+    if len(chain) == 1:
+        return chain[0]
+    return FallbackTextToSpeech(*chain)
 
 
 def create_tts(
@@ -287,20 +524,44 @@ def create_tts(
     elevenlabs_voice_id: str = DEFAULT_ELEVENLABS_VOICE,
     elevenlabs_model: str = DEFAULT_ELEVENLABS_MODEL,
 ) -> TextToSpeech:
+    from hermes.config.credentials import elevenlabs_key_hint, resolve_elevenlabs_api_key
+
     edge = EdgeTurkishTTS(language=language, gender=gender, voice=voice)
     chosen = (backend or "edge").strip().casefold()
+    resolved_key, key_source = resolve_elevenlabs_api_key(config_value=elevenlabs_api_key)
+    api_key = (elevenlabs_api_key or resolved_key or "").strip()
+
     if chosen == "elevenlabs":
+        if not api_key:
+            _audit("ELEVENLABS_SKIPPED_NO_KEY", reason="elevenlabs_api_key_missing")
+            if edge.is_available():
+                _audit("EDGE_FALLBACK_SELECTED", voice=edge._edge_voice)
+                _audit("TTS_BACKEND_SELECTED", backend="edge", elevenlabs_configured=False)
+                return _chain_with_sapi(edge)
+            return _chain_with_sapi()
+
+        _audit(
+            "elevenlabs_api_key_loaded",
+            source=key_source if not elevenlabs_api_key else "parameter",
+            key_length=len(api_key),
+        )
         eleven = ElevenLabsTTS(
-            api_key=elevenlabs_api_key,
+            api_key=api_key,
             voice_id=elevenlabs_voice_id,
             model_id=elevenlabs_model,
         )
-        if eleven.is_available() and edge.is_available():
-            return FallbackTextToSpeech(eleven, edge)
-        if eleven.is_available():
-            return eleven
-        logger.warning("tts_elevenlabs_unavailable", reason="missing_api_key")
+        if edge.is_available():
+            _audit(
+                "TTS_BACKEND_SELECTED",
+                backend="elevenlabs+edge_fallback",
+                elevenlabs_configured=True,
+            )
+            return _chain_with_sapi(eleven, edge)
+        _audit("TTS_BACKEND_SELECTED", backend="elevenlabs", edge_available=False)
+        return _chain_with_sapi(eleven)
+
     if edge.is_available():
-        logger.info("tts_using_edge")
-        return edge
-    return NullTextToSpeech()
+        _audit("TTS_BACKEND_SELECTED", backend="edge")
+        return _chain_with_sapi(edge)
+    _audit("TTS_BACKEND_SELECTED", backend="null", reason="edge_unavailable")
+    return _chain_with_sapi()

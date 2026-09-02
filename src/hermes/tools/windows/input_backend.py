@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, parse_qs
 
+from hermes.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 _APP_ALIASES: dict[str, list[str]] = {
     "chrome": [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -31,6 +35,8 @@ _APP_ALIASES: dict[str, list[str]] = {
     "explorer": ["explorer"],
     "cmd": ["cmd"],
     "powershell": ["powershell"],
+    "calc": ["calc"],
+    "mspaint": ["mspaint", "paint"],
 }
 
 
@@ -106,6 +112,206 @@ def _tcp_port_open(host: str, port: int, timeout: float = 0.35) -> bool:
         return False
 
 
+_NEW_WINDOW_MARKERS = (
+    "yeni pencere",
+    "yeni chrome",
+    "yeni notepad",
+    "yeni not defteri",
+    "new window",
+    "yeni instance",
+    "ayri pencere",
+    "ayrı pencere",
+)
+
+_RECREATE_MARKERS = (
+    "yeniden olustur",
+    "yeniden oluştur",
+    "tekrar olustur",
+    "tekrar oluştur",
+)
+
+_APP_WINDOW_HINTS: dict[str, tuple[str, ...]] = {
+    "chrome": ("google chrome", "chrome"),
+    "edge": ("microsoft edge", "edge"),
+    "firefox": ("mozilla firefox", "firefox"),
+    "notepad": ("notepad", "not defteri"),
+}
+
+
+def wants_new_window(user_message: str = "", *, args: list[str] | None = None) -> bool:
+    lower = (user_message or "").casefold()
+    if any(marker in lower for marker in _NEW_WINDOW_MARKERS):
+        return True
+    if args and any(arg in ("--new-window", "-new-window") for arg in args):
+        return True
+    return False
+
+
+def wants_recreate(user_message: str = "") -> bool:
+    lower = (user_message or "").casefold()
+    return any(marker in lower for marker in _RECREATE_MARKERS)
+
+
+def wants_modify_existing(user_message: str = "") -> bool:
+    """True when the user intends to change content of an existing file."""
+    lower = (user_message or "").casefold()
+    markers = (
+        "degistir",
+        "değiştir",
+        "guncelle",
+        "güncelle",
+        "icerigini",
+        "içeriğini",
+        "olarak yap",
+        "olarak yaz",
+    )
+    return any(marker in lower for marker in markers)
+
+
+def list_window_titles() -> list[str]:
+    gw = _get_pygetwindow()
+    return [str(window.title).strip() for window in gw.getAllWindows() if str(window.title).strip()]
+
+
+def _title_matches_app(title: str, app_key: str) -> bool:
+    lower = title.casefold()
+    hints = _APP_WINDOW_HINTS.get(app_key.casefold(), (app_key.casefold(),))
+    if not any(hint in lower for hint in hints):
+        return False
+    if app_key == "chrome" and "hermes" in lower:
+        return False
+    return True
+
+
+def find_app_window_title(app: str, *, title_hint: str = "") -> str | None:
+    key = app.strip().casefold()
+    candidates = [title for title in list_window_titles() if _title_matches_app(title, key)]
+    if not candidates:
+        return None
+    hint = (title_hint or "").strip().casefold()
+    if not hint:
+        return candidates[0]
+
+    def score(title: str) -> tuple[int, int]:
+        lower = title.casefold()
+        if hint in lower:
+            return (0, -len(title))
+        hint_tokens = [token for token in re.split(r"[\s\-—|]+", hint) if len(token) >= 3]
+        token_hits = sum(1 for token in hint_tokens if token in lower)
+        return (1 if token_hits else 2, -token_hits)
+
+    return sorted(candidates, key=score)[0]
+
+
+def _normalize_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _explorer_title_matches_folder(title: str, folder: Path) -> bool:
+    folder_name = folder.name.casefold()
+    lower = title.casefold()
+    if folder_name not in lower:
+        return False
+    if lower.strip() == folder_name:
+        return True
+    explorer_markers = ("file explorer", "dosya gezgini", "explorer")
+    return any(marker in lower for marker in explorer_markers)
+
+
+def find_explorer_window_for_folder(folder_path: Path) -> str | None:
+    folder = _normalize_path(folder_path)
+    for title in list_window_titles():
+        if _explorer_title_matches_folder(title, folder):
+            return title
+    return None
+
+
+def find_file_window_title(file_path: Path) -> str | None:
+    stem = file_path.stem.casefold()
+    name = file_path.name.casefold()
+    for title in list_window_titles():
+        lower = title.casefold()
+        if name not in lower and (not stem or stem not in lower):
+            continue
+        if any(marker in lower for marker in ("notepad", "not defteri", "word", "excel", "editor")):
+            return title
+    return None
+
+
+def open_path_on_windows(
+    path: str | Path,
+    *,
+    user_message: str = "",
+    force_new: bool = False,
+) -> dict[str, Any]:
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = Path.home() / "Desktop" / target
+    if not target.exists():
+        raise ValueError(f"Yol bulunamadi: {target}")
+
+    new_window = force_new or wants_new_window(user_message)
+    if not new_window:
+        if target.is_dir():
+            existing = find_explorer_window_for_folder(target)
+            if existing:
+                logger.info("open_path_reuse_explorer", path=str(target), title=existing)
+                focus_window(existing, partial=True)
+                return {
+                    "path": str(target),
+                    "opened": False,
+                    "reused": True,
+                    "verified": True,
+                    "is_directory": True,
+                    "window_title": existing,
+                }
+        else:
+            existing = find_file_window_title(target)
+            if existing:
+                logger.info("open_path_reuse_app", path=str(target), title=existing)
+                focus_window(existing, partial=True)
+                return {
+                    "path": str(target),
+                    "opened": False,
+                    "reused": True,
+                    "verified": True,
+                    "is_directory": False,
+                    "window_title": existing,
+                }
+
+    os.startfile(str(target))  # noqa: S606
+    logger.info("open_path_launched", path=str(target), is_directory=target.is_dir())
+    verified = False
+    window_title: str | None = None
+    if target.is_dir():
+        for _ in range(8):
+            time.sleep(0.35)
+            window_title = find_explorer_window_for_folder(target)
+            if window_title:
+                verified = True
+                logger.info("open_path_explorer_detected", path=str(target), title=window_title)
+                break
+    elif target.is_file():
+        for _ in range(6):
+            time.sleep(0.3)
+            window_title = find_file_window_title(target)
+            if window_title:
+                verified = True
+                logger.info("open_path_app_detected", path=str(target), title=window_title)
+                break
+    return {
+        "path": str(target),
+        "opened": True,
+        "reused": False,
+        "verified": verified,
+        "is_directory": target.is_dir(),
+        "window_title": window_title,
+    }
+
+
 def open_chrome_with_debugging(url: str = "", port: int = CHROME_DEBUG_PORT) -> dict[str, Any]:
     """
     Chrome'u CDP (remote debugging) ile acar.
@@ -150,13 +356,50 @@ def open_chrome_with_debugging(url: str = "", port: int = CHROME_DEBUG_PORT) -> 
     }
 
 
-def open_application(app: str, args: list[str] | None = None) -> dict[str, Any]:
+def open_application(
+    app: str,
+    args: list[str] | None = None,
+    *,
+    user_message: str = "",
+    force_new: bool = False,
+) -> dict[str, Any]:
     path = _resolve_app_path(app)
     if not path:
         raise ValueError(f"Application not found: {app}")
+    app_key = app.strip().casefold()
+    new_window = force_new or wants_new_window(user_message, args=args)
+
+    if not new_window and app_key in _APP_WINDOW_HINTS:
+        existing = find_app_window_title(app_key)
+        if existing:
+            logger.info("open_app_reuse_window", app=app_key, title=existing)
+            try:
+                focus_window(existing, partial=False)
+            except ValueError:
+                focus_window(existing, partial=True)
+            return {
+                "app": app,
+                "path": path,
+                "reused": True,
+                "focused": True,
+                "verified": True,
+                "window_title": existing,
+            }
+
     cmd = [path, *(args or [])]
     proc = subprocess.Popen(cmd, shell=False)
-    return {"app": app, "path": path, "pid": proc.pid, "args": args or []}
+    logger.info("open_app_launched", app=app_key, pid=proc.pid)
+    time.sleep(0.8)
+    window_title = find_app_window_title(app_key)
+    return {
+        "app": app,
+        "path": path,
+        "pid": proc.pid,
+        "args": args or [],
+        "reused": False,
+        "verified": bool(window_title),
+        "window_title": window_title,
+    }
 
 
 def open_url(url: str, browser: str = "") -> dict[str, Any]:
@@ -296,6 +539,93 @@ def browser_nav(action: str = "back") -> dict[str, Any]:
     return {"action": key, "keys": keys}
 
 
+def _focus_window_hwnd(hwnd: int) -> None:
+    import win32con
+    import win32gui
+
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    except Exception:
+        pass
+    try:
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def capture_window_image(
+    title: str,
+    *,
+    partial: bool = True,
+    chrome_crop: int = 96,
+) -> dict[str, Any]:
+    """
+    Capture a window via PrintWindow (works for Chrome/DWM layered windows).
+    ImageGrab on window regions often returns blank for unfocused Chrome.
+    """
+    import ctypes
+    import win32gui
+    import win32ui
+    from PIL import Image
+
+    gw = _get_pygetwindow()
+    if partial:
+        matches = [w for w in gw.getAllWindows() if title.lower() in (w.title or "").lower()]
+    else:
+        matches = gw.getWindowsWithTitle(title)
+    if not matches:
+        raise ValueError(f"Window not found: {title}")
+    window = matches[0]
+    hwnd = int(window._hWnd)
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    width = max(int(right - left), 1)
+    height = max(int(bottom - top), 1)
+
+    hwnd_dc = win32gui.GetWindowDC(hwnd)
+    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+    save_dc = mfc_dc.CreateCompatibleDC()
+    save_bitmap = win32ui.CreateBitmap()
+    save_bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
+    save_dc.SelectObject(save_bitmap)
+    pw_result = int(ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 3))
+    bmp_info = save_bitmap.GetInfo()
+    bmp_bits = save_bitmap.GetBitmapBits(True)
+    image = Image.frombuffer(
+        "RGB",
+        (bmp_info["bmWidth"], bmp_info["bmHeight"]),
+        bmp_bits,
+        "raw",
+        "BGRX",
+        0,
+        1,
+    )
+    win32gui.DeleteObject(save_bitmap.GetHandle())
+    save_dc.DeleteDC()
+    mfc_dc.DeleteDC()
+    win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+    crop_top = min(max(int(chrome_crop), 0), max(image.height - 1, 0))
+    client_image = image.crop((0, crop_top, image.width, image.height))
+
+    screenshot_dir = Path(os.environ.get("LOCALAPPDATA", ".")) / "HERMES" / "screenshots"
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    path = screenshot_dir / f"window_{os.getpid()}_{hwnd}.png"
+    client_image.save(path, format="PNG")
+
+    return {
+        "path": str(path),
+        "width": client_image.width,
+        "height": client_image.height,
+        "format": "png",
+        "capture_method": "printwindow",
+        "printwindow_ok": bool(pw_result),
+        "window_title": str(window.title or title),
+        "window_rect": (left, top, width, height),
+        "hwnd": hwnd,
+        "chrome_crop": crop_top,
+    }
+
+
 def focus_window(title: str, partial: bool = True) -> dict[str, Any]:
     gw = _get_pygetwindow()
     if partial:
@@ -305,10 +635,26 @@ def focus_window(title: str, partial: bool = True) -> dict[str, Any]:
     if not matches:
         raise ValueError(f"Window not found: {title}")
     window = matches[0]
-    if window.isMinimized:
-        window.restore()
-    window.activate()
-    return {"title": window.title, "left": window.left, "top": window.top, "focused": True}
+    focused = False
+    try:
+        if window.isMinimized:
+            window.restore()
+        window.activate()
+        focused = True
+    except Exception as exc:
+        logger.info("focus_window_pygetwindow_skip", title=title, error=str(exc))
+        try:
+            _focus_window_hwnd(int(window._hWnd))
+            focused = True
+        except Exception as inner:
+            logger.info("focus_window_win32_skip", title=title, error=str(inner))
+    return {
+        "title": window.title,
+        "left": window.left,
+        "top": window.top,
+        "focused": focused,
+        "hwnd": int(window._hWnd),
+    }
 
 
 def type_text(text: str, interval: float = 0.02) -> dict[str, Any]:

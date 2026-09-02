@@ -17,7 +17,7 @@ def test_plan_local_sequence_multi_step():
 
 
 def test_has_actionable_sequence():
-    assert has_actionable_sequence("klasor olustur ve chrome ac") is True
+    assert has_actionable_sequence("Deneme klasoru olustur ve chrome ac") is True
     assert has_actionable_sequence("merhaba nasilsin") is False
 
 

@@ -1,0 +1,16 @@
+id: disk_space
+title: Disk bos alan bilgisi
+goal_patterns:
+  - bos alan
+  - boş alan
+  - disk
+  - ne kadar yer
+  - depolama
+preferred_tools:
+  - get_disk_info
+security_level: normal
+hints:
+  - get_disk_info ile tum suruculerin bos alan bilgisini topla.
+  - Kullaniciya dogal dilde ozet ver.
+validation_rules:
+  - Disk bilgisi toplanmali

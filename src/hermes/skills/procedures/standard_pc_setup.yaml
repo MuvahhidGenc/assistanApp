@@ -1,0 +1,23 @@
+id: standard_pc_setup
+title: Standart PC / Developer kurulumu
+goal_patterns:
+  - standart pc
+  - pc kurulum
+  - bilgisayar kurulum
+  - developer bilgisayar
+  - it bilgisayar
+preferred_tools:
+  - get_system_info
+  - list_installed_programs
+  - get_network_config
+  - install_program
+  - open_app
+  - open_url
+security_level: normal
+hints:
+  - Developer/IT bilgisayarinda tercih edilen programlari ve eksikleri kontrol et.
+  - Ag ayarlarini ve temel tarayici kurulumunu dogrula.
+  - Kurulum sonrasi read-only tool'larla dogrulama yap.
+validation_rules:
+  - Kurulum oncesi sistem bilgisi toplanmali
+  - Yuksek riskli islemler icin aciklama olmali

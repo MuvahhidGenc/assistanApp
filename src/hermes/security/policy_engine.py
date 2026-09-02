@@ -238,6 +238,9 @@ class PolicyEngine:
         tool_name: str,
         arguments: dict[str, Any] | None = None,
         server_risk_level: str | None = None,
+        *,
+        runtime: object | None = None,
+        envelope_target: str | None = None,
     ) -> PolicyResult:
         name = tool_name.lower()
         for pattern in DENIED_TOOL_PATTERNS:

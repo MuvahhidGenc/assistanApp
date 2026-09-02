@@ -190,8 +190,14 @@ _TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "write_file": {
         "type": "object",
         "properties": {
-            "path": {"type": "string"},
-            "content": {"type": "string"},
+            "path": {"type": "string", "description": "Destination file path"},
+            "content": {
+                "type": "string",
+                "description": (
+                    "Exact literal text to write into the file — nothing else. "
+                    "Do not include user meta instructions (e.g. 'write exactly', 'nothing else')."
+                ),
+            },
             "append": {"type": "boolean", "default": False},
         },
         "required": ["path", "content"],
@@ -269,6 +275,9 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 class LocalToolRequest:
     name: str
     arguments: dict[str, Any]
+    execution_target: str = "client"
+    mission_id: str | None = None
+    step_id: str | None = None
 
 
 def input_schema_for_tool(tool_name: str, tool: Any | None = None) -> dict[str, Any]:
@@ -292,6 +301,7 @@ def build_tool_manifest(registry: ToolRegistry) -> list[dict[str, Any]]:
                 "description": definition.description,
                 "read_only": read_only,
                 "risk_level": definition.risk_level.value,
+                "execution_target": definition.execution_target.value,
                 "input_schema": input_schema_for_tool(definition.name, tool),
             }
         )
@@ -314,14 +324,69 @@ def parse_local_tool_request(text: str) -> LocalToolRequest | None:
     arguments = payload.get("arguments") or payload.get("args") or {}
     if not isinstance(arguments, dict):
         arguments = {}
-    return LocalToolRequest(name=name.strip(), arguments=arguments)
+    execution_target = str(
+        payload.get("execution_target") or payload.get("executionTarget") or "client"
+    ).strip().lower()
+    return LocalToolRequest(
+        name=name.strip(),
+        arguments=arguments,
+        execution_target=execution_target or "client",
+        mission_id=payload.get("mission_id") or payload.get("missionId"),
+        step_id=payload.get("step_id") or payload.get("stepId"),
+    )
+
+
+_LOCAL_FILE_EXTENSIONS = frozenset(
+    {
+        "txt",
+        "pdf",
+        "doc",
+        "docx",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "md",
+        "csv",
+        "xls",
+        "xlsx",
+        "zip",
+        "rar",
+        "7z",
+        "exe",
+        "dll",
+        "bat",
+        "ps1",
+        "json",
+        "xml",
+        "html",
+        "htm",
+        "log",
+        "ini",
+        "cfg",
+        "yaml",
+        "yml",
+    }
+)
+
+
+def _looks_like_local_filename(value: str) -> bool:
+    host = (value or "").split("/")[0].split("://")[-1].split(":")[0].strip().lower()
+    if "." not in host:
+        return False
+    ext = host.rsplit(".", 1)[-1]
+    return ext in _LOCAL_FILE_EXTENSIONS
 
 
 def extract_url_hint(text: str) -> str | None:
     """Extract a URL or domain from user text for multi-step navigation hints."""
     url_match = re.search(r"""https?://[^\s\"']+""", text, re.IGNORECASE)
     if url_match:
-        return url_match.group(0)
+        value = url_match.group(0)
+        if _looks_like_local_filename(value):
+            return None
+        return value
     domain_match = re.search(
         r"""(?:https?://)?([a-z0-9][a-z0-9.-]+\.[a-z]{2,}(?:/[^\s\"']*)?)""",
         text,
@@ -329,6 +394,8 @@ def extract_url_hint(text: str) -> str | None:
     )
     if domain_match:
         value = domain_match.group(0)
+        if _looks_like_local_filename(value):
+            return None
         if not value.startswith("http"):
             return f"https://{value.lstrip('/')}"
         return value

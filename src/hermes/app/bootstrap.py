@@ -27,6 +27,9 @@ def create_application(
 ) -> HermesApplication:
     from pathlib import Path
 
+    from hermes.platform.runtime import configure_ssl_certificates
+
+    configure_ssl_certificates()
     settings = AppSettings.load(Path(config_path) if config_path else None)
     use_debug = debug or settings.client.debug
 

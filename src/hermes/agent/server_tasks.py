@@ -75,6 +75,11 @@ def should_defer_to_server(message: str) -> bool:
         return False
     lower = text.casefold()
 
+    from hermes.agent.general_goal import is_general_mission_goal
+
+    if is_general_mission_goal(text):
+        return False
+
     if _is_local_browser_task(text) or _is_interactive_desktop_task(text):
         return False
 

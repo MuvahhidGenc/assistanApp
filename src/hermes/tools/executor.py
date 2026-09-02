@@ -7,6 +7,7 @@ from hermes.security.approval_manager import ApprovalManager
 from hermes.security.policy_engine import AuditLogger, PolicyDecision, PolicyEngine
 from hermes.server.models import ToolCallRequest, ToolResultPayload
 from hermes.tools.base import BaseTool, ToolExecutionResult  # noqa: F401
+from hermes.tools.execution_target import ExecutionTarget, validate_runtime_execution
 from hermes.tools.registry import ToolRegistry
 from hermes.utils.logging import get_logger
 
@@ -48,9 +49,32 @@ class ToolExecutor:
         tool_call: ToolCallRequest,
         run_id: str = "",
         skip_approval: bool = False,
+        *,
+        runtime: ExecutionTarget = ExecutionTarget.CLIENT,
+        user_message: str = "",
     ) -> ToolResultPayload:
         tool_name = tool_call.name
         arguments = tool_call.arguments
+
+        allowed, boundary_reason = validate_runtime_execution(
+            tool_name,
+            self._registry,
+            runtime=runtime,
+            user_message=user_message,
+            envelope_target=getattr(tool_call, "execution_target", None),
+        )
+        if not allowed:
+            self._audit.log(
+                "tool_execution_boundary_denied",
+                tool=tool_name,
+                runtime=runtime.value,
+                reason=boundary_reason,
+            )
+            return ToolResultPayload(
+                tool_call_id=tool_call.id,
+                success=False,
+                error=boundary_reason,
+            )
 
         self._audit.log(
             "tool_call_received",
@@ -64,6 +88,8 @@ class ToolExecutor:
             tool_name,
             arguments,
             server_risk_level=tool_call.risk_level,
+            runtime=runtime,
+            envelope_target=getattr(tool_call, "execution_target", None),
         )
 
         if policy.decision == PolicyDecision.DENY:
@@ -86,7 +112,10 @@ class ToolExecutor:
             return ToolResultPayload(tool_call_id=tool_call.id, success=False, error=error)
 
         try:
-            result = await tool.execute(**arguments)
+            exec_kwargs = dict(arguments)
+            if user_message:
+                exec_kwargs["user_message"] = user_message
+            result = await tool.execute(**exec_kwargs)
             self._audit.log(
                 "tool_executed",
                 tool=tool_name,

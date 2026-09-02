@@ -94,6 +94,9 @@ class ToolCallRequest(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     risk_level: str = "read_only"
+    execution_target: str = "client"
+    mission_id: str | None = None
+    step_id: str | None = None
 
 
 class ApprovalRequest(BaseModel):

@@ -18,6 +18,7 @@ Write-Host "==> Generating tray icon assets"
 & $python scripts\generate_icon.py
 
 Write-Host "==> Building hermes-client.exe (GUI / no console)"
+& $python -c "from hermes.build_info import HERMES_BUILD_VERSION, BUILD_TIMESTAMP; print(f'HERMES_BUILD_VERSION={HERMES_BUILD_VERSION}'); print(f'BUILD_TIMESTAMP={BUILD_TIMESTAMP}')"
 & $pyinstaller hermes-client.spec --noconfirm --clean
 
 $exe = Join-Path (Get-Location) "dist\hermes-client.exe"

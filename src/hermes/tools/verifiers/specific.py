@@ -1,0 +1,683 @@
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from hermes.tools.verifiers.base import BaseVerifier, Observation, VerificationResult, VerificationStatus
+from hermes.tools.verifiers.context import VerifierContext
+from hermes.tools.windows.file_tools import resolve_user_path
+
+
+def _resolve_folder_path(raw: str) -> Path:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("path required")
+    target = Path(text).expanduser()
+    if not target.is_absolute():
+        target = Path.home() / "Desktop" / target
+    return target.resolve()
+
+
+def _resolve_git_target(ctx: VerifierContext) -> Path | None:
+    output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+    raw = str(output.get("path") or ctx.tool_arguments.get("target_dir") or "").strip()
+    if not raw:
+        url = str(ctx.tool_arguments.get("repo_url") or ctx.tool_arguments.get("url") or "")
+        repo_name = Path(urlparse(url.replace("git@", "https://")).path).stem or "repo"
+        if repo_name:
+            return (Path.home() / "Desktop" / repo_name).resolve()
+        return None
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = Path.home() / "Desktop" / target
+    return target.resolve()
+
+
+def _expected_dns_servers(ctx: VerifierContext) -> list[str]:
+    preset = str(ctx.tool_arguments.get("preset") or "").strip().lower()
+    presets = {
+        "google": ["8.8.8.8", "8.8.4.4"],
+        "cloudflare": ["1.1.1.1", "1.0.0.1"],
+        "quad9": ["9.9.9.9", "149.112.112.112"],
+        "dhcp": [],
+    }
+    if preset in presets:
+        return list(presets[preset])
+    servers = ctx.tool_arguments.get("servers")
+    if isinstance(servers, str):
+        return [part.strip() for part in servers.replace(",", " ").split() if part.strip()]
+    if isinstance(servers, list):
+        return [str(item).strip() for item in servers if str(item).strip()]
+    output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+    from_output = output.get("servers")
+    if isinstance(from_output, list):
+        return [str(item).strip() for item in from_output if str(item).strip()]
+    return []
+
+
+def _dns_from_network_config(data: Any) -> list[str]:
+    servers: list[str] = []
+    if not isinstance(data, dict):
+        return servers
+    dns_block = data.get("dns_servers")
+    if isinstance(dns_block, list):
+        for item in dns_block:
+            if isinstance(item, dict):
+                addresses = item.get("ServerAddresses") or item.get("ServerAddresses".lower())
+                if isinstance(addresses, list):
+                    servers.extend(str(a).strip() for a in addresses if str(a).strip())
+                elif isinstance(addresses, str):
+                    servers.extend(part.strip() for part in addresses.split(",") if part.strip())
+    adapters = data.get("adapters")
+    if isinstance(adapters, list):
+        for adapter in adapters:
+            if not isinstance(adapter, dict):
+                continue
+            dns_value = adapter.get("DNS") or adapter.get("dns")
+            if isinstance(dns_value, str) and dns_value.strip():
+                servers.extend(part.strip() for part in dns_value.split(",") if part.strip())
+    return servers
+
+
+class GitCloneVerifier(BaseVerifier):
+    tool_names = ("git_clone",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="git_clone_filesystem",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        try:
+            target = _resolve_git_target(ctx)
+        except (ValueError, OSError):
+            target = None
+        if target is None:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="git_clone_filesystem",
+                details={"reason": "target_path_unknown"},
+            )
+        observation = Observation(
+            source="filesystem",
+            data={
+                "path": str(target),
+                "exists": target.exists(),
+                "git_dir_exists": (target / ".git").exists(),
+                "entries": [item.name for item in target.iterdir()] if target.is_dir() else [],
+            },
+        )
+        if not target.is_dir():
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="git_clone_filesystem",
+                details={"reason": "target_directory_missing", "path": str(target)},
+                observation=observation,
+            )
+        if not (target / ".git").exists():
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="git_clone_filesystem",
+                details={"reason": "git_metadata_missing", "path": str(target)},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="git_clone_filesystem",
+            details={"path": str(target), "git_dir": str(target / ".git")},
+            observation=observation,
+        )
+
+
+class InstallProgramVerifier(BaseVerifier):
+    tool_names = ("install_program",)
+    default_timeout = 30.0
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="install_program_state",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        package = str(ctx.tool_arguments.get("package") or "").strip()
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        observation_data: dict[str, Any] = {"package": package, "execution_output": output}
+
+        if output.get("note") and "kurulu" in str(output.get("note")).casefold():
+            observation = Observation(source="execution_output", data=observation_data)
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="install_program_idempotent",
+                details={"reason": "already_installed", "package": package},
+                observation=observation,
+            )
+
+        if ctx.observe_tool and package:
+            observed = await ctx.observe_tool(
+                "list_installed_programs",
+                {"filter_name": package, "limit": 20},
+                ctx.run_id,
+            )
+            if observed and observed.success and isinstance(observed.output, dict):
+                programs = observed.output.get("programs") or []
+                names = [
+                    str(item.get("DisplayName", ""))
+                    for item in programs
+                    if isinstance(item, dict)
+                ]
+                observation_data["installed_programs"] = names
+                observation_data["program_count"] = observed.output.get("count")
+                matched = any(package.casefold() in name.casefold() for name in names if name)
+                if matched:
+                    return VerificationResult(
+                        status=VerificationStatus.VERIFIED,
+                        method="list_installed_programs",
+                        details={"package": package, "matched_names": names[:5]},
+                        observation=Observation(source="list_installed_programs", data=observation_data),
+                    )
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    method="list_installed_programs",
+                    details={"reason": "program_not_found", "package": package, "candidates": names[:5]},
+                    observation=Observation(source="list_installed_programs", data=observation_data),
+                )
+
+        if output.get("verified") is True:
+            observation = Observation(source="execution_output", data=observation_data)
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="install_program_winget_output",
+                details={"package": package, "winget_id": output.get("winget_id")},
+                observation=observation,
+            )
+
+        return VerificationResult(
+            status=VerificationStatus.UNKNOWN,
+            method="install_program_state",
+            details={"reason": "cannot_confirm_installation", "package": package},
+            observation=Observation(source="execution_output", data=observation_data),
+        )
+
+
+class CreateFolderVerifier(BaseVerifier):
+    tool_names = ("create_folder",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="create_folder_filesystem",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        raw = str(output.get("path") or ctx.tool_arguments.get("path") or ctx.tool_arguments.get("name") or "")
+        if not raw.strip():
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="create_folder_filesystem",
+                details={"reason": "path_missing"},
+            )
+        try:
+            target = _resolve_folder_path(raw)
+        except ValueError:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="create_folder_filesystem",
+                details={"reason": "path_unresolvable"},
+            )
+        observation = Observation(
+            source="filesystem",
+            data={"path": str(target), "exists": target.exists(), "is_dir": target.is_dir()},
+        )
+        if target.is_dir():
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="create_folder_filesystem",
+                details={"path": str(target)},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            method="create_folder_filesystem",
+            details={"reason": "folder_missing", "path": str(target)},
+            observation=observation,
+        )
+
+
+class GetSystemInfoVerifier(BaseVerifier):
+    tool_names = ("get_system_info",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="get_system_info_output",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        from hermes.mission.step_context import missing_system_info_fields, system_info_output_valid
+
+        missing = missing_system_info_fields(output)
+        observation = Observation(
+            source="execution_output",
+            data={"keys": list(output.keys())[:20], "missing_fields": missing},
+        )
+        method = ctx.verification_method or "system_info_fields"
+        if method == "system_info_fields" and not system_info_output_valid(output):
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="get_system_info_fields",
+                details={"reason": "missing_required_fields", "missing": missing},
+                observation=observation,
+            )
+        if output:
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="get_system_info_output",
+                details={"reason": "output_present"},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            method="get_system_info_output",
+            details={"reason": "output_missing"},
+            observation=observation,
+        )
+
+
+class WriteFileVerifier(BaseVerifier):
+    tool_names = ("write_file",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="write_file_filesystem",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        raw = str(ctx.tool_arguments.get("path") or ctx.tool_arguments.get("file") or "").strip()
+        planned_path = raw
+        if isinstance(ctx.execution_output, dict):
+            actual = str(ctx.execution_output.get("path") or "").strip()
+            if actual:
+                raw = actual
+        if not raw:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="write_file_filesystem",
+                details={"reason": "path_missing"},
+            )
+        try:
+            target = resolve_user_path(raw)
+        except ValueError:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="write_file_filesystem",
+                details={"reason": "path_unresolvable"},
+            )
+        exists = target.is_file()
+        content = ctx.tool_arguments.get("content")
+        content_hash: str | None = None
+        hash_match: bool | None = None
+        parent_mismatch = False
+        planned_normalized = planned_path.replace("\\", "/")
+        if exists and planned_path and ("/" in planned_normalized or "\\" in planned_path):
+            parts = Path(planned_normalized).parts
+            if len(parts) >= 2:
+                expected_parent_name = parts[-2]
+                parent_mismatch = target.parent.name.casefold() != expected_parent_name.casefold()
+        if exists and isinstance(content, str):
+            try:
+                actual = target.read_text(encoding="utf-8")
+                expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                actual_hash = hashlib.sha256(actual.encode("utf-8")).hexdigest()
+                content_hash = actual_hash
+                hash_match = expected_hash == actual_hash
+            except OSError:
+                hash_match = None
+        observation = Observation(
+            source="filesystem",
+            data={
+                "path": str(target),
+                "planned_path": planned_path,
+                "actual_write_path": str(target),
+                "exists": exists,
+                "size": target.stat().st_size if exists else None,
+                "content_hash": content_hash,
+                "hash_match": hash_match,
+                "parent_directory": str(target.parent),
+                "parent_mismatch": parent_mismatch,
+            },
+        )
+        if not exists:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="write_file_filesystem",
+                details={"reason": "file_missing", "path": str(target)},
+                observation=observation,
+            )
+        if parent_mismatch:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="write_file_filesystem",
+                details={
+                    "reason": "unexpected_parent_directory",
+                    "path": str(target),
+                    "parent": str(target.parent),
+                },
+                observation=observation,
+            )
+        if hash_match is False:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="write_file_content_hash",
+                details={"reason": "content_mismatch", "path": str(target)},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="write_file_filesystem" if hash_match is None else "write_file_content_hash",
+            details={"path": str(target), "size": observation.data.get("size")},
+            observation=observation,
+        )
+
+
+class SetDnsVerifier(BaseVerifier):
+    tool_names = ("set_dns",)
+    default_timeout = 20.0
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="set_dns_network_state",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        expected = _expected_dns_servers(ctx)
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        adapter = str(output.get("adapter") or ctx.tool_arguments.get("adapter") or "").strip()
+
+        observation_data: dict[str, Any] = {
+            "expected_servers": expected,
+            "adapter": adapter or None,
+            "execution_output": output,
+        }
+        observed_servers: list[str] = []
+
+        if ctx.observe_tool:
+            observed = await ctx.observe_tool("get_network_config", {}, ctx.run_id)
+            if observed and observed.success:
+                observation_data["network_config"] = observed.output
+                observed_servers = _dns_from_network_config(observed.output)
+
+        if not observed_servers and isinstance(output.get("verified"), list):
+            observed_servers = [str(item).strip() for item in output["verified"] if str(item).strip()]
+
+        observation_data["observed_servers"] = observed_servers
+        observation = Observation(
+            source="get_network_config" if ctx.observe_tool else "execution_output",
+            data=observation_data,
+        )
+
+        if not expected:
+            if observed_servers == [] or "dhcp" in str(output.get("servers", "")).casefold():
+                return VerificationResult(
+                    status=VerificationStatus.VERIFIED,
+                    method="set_dns_dhcp",
+                    details={"adapter": adapter, "mode": "dhcp"},
+                    observation=observation,
+                )
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="set_dns_network_state",
+                details={"reason": "dhcp_state_uncertain"},
+                observation=observation,
+            )
+
+        if not observed_servers:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="set_dns_network_state",
+                details={"reason": "dns_observation_unavailable", "expected": expected},
+                observation=observation,
+            )
+
+        missing = [ip for ip in expected if ip not in observed_servers]
+        if missing:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="set_dns_network_state",
+                details={
+                    "reason": "dns_mismatch",
+                    "expected": expected,
+                    "observed": observed_servers,
+                    "missing": missing,
+                },
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="set_dns_network_state",
+            details={"expected": expected, "observed": observed_servers, "adapter": adapter},
+            observation=observation,
+        )
+
+
+class ReadScreenTextVerifier(BaseVerifier):
+    tool_names = ("read_screen_text",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        from hermes.mission.reality_verification import normalize_visible_page_text
+
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_text_substantive",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        text, error = normalize_visible_page_text(output)
+        observation = Observation(source="execution_output", data={"text_len": len(text or ""), "error": error})
+        if not text:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_text_substantive",
+                details={"reason": "not_substantive", "error": error or "empty_text"},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="screen_text_substantive",
+            details={"text_len": len(text), "verified_output": {**output, "text": text, "content_type": "screen_text"}},
+            observation=observation,
+        )
+
+
+class OpenUrlVerifier(BaseVerifier):
+    tool_names = ("open_url", "browser_nav")
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="open_url_state",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        expected_url = str(ctx.tool_arguments.get("url") or "").strip()
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        opened_url = str(output.get("url") or output.get("opened_url") or expected_url).strip()
+        observation = Observation(
+            source="execution_output",
+            data={"expected_url": expected_url, "opened_url": opened_url, "raw_output": output},
+        )
+        if not expected_url:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="open_url_state",
+                details={"reason": "expected_url_missing"},
+                observation=observation,
+            )
+        normalized_expected = expected_url.rstrip("/").casefold()
+        normalized_opened = opened_url.rstrip("/").casefold()
+        if normalized_opened and (
+            normalized_expected in normalized_opened or normalized_opened in normalized_expected
+        ):
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="open_url_output",
+                details={"url": opened_url or expected_url},
+                observation=observation,
+            )
+        if output.get("opened") is True or output.get("success") is True:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="open_url_state",
+                details={"reason": "browser_url_unconfirmed", "expected_url": expected_url},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            method="open_url_state",
+            details={"reason": "url_not_opened", "expected_url": expected_url},
+            observation=observation,
+        )
+
+
+class SearchFilesVerifier(BaseVerifier):
+    tool_names = ("search_files",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="search_files_filesystem",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+
+        from hermes.mission.step_context import (
+            filter_search_matches_for_pattern,
+            scan_files_on_filesystem,
+        )
+
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        raw_path = str(output.get("folder") or ctx.tool_arguments.get("path") or "").strip()
+        pattern = str(output.get("pattern") or ctx.tool_arguments.get("pattern") or "*").strip()
+        hours = ctx.tool_arguments.get("modified_within_hours")
+        if hours is None and isinstance(output.get("modified_within_hours"), int):
+            hours = output.get("modified_within_hours")
+
+        scanned = scan_files_on_filesystem(raw_path, pattern, modified_within_hours=hours)
+        if scanned.get("error"):
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="search_files_filesystem",
+                details={"reason": "folder_missing", "error": scanned.get("error")},
+                observation=Observation(source="filesystem", data=scanned),
+            )
+
+        matches = filter_search_matches_for_pattern(list(scanned.get("matches") or []), pattern)
+        verified_output = {
+            "folder": scanned.get("folder"),
+            "pattern": pattern,
+            "count": len(matches),
+            "matches": matches,
+            "verified": True,
+        }
+        observation = Observation(
+            source="filesystem",
+            data={"verified_output": verified_output, "scan": scanned},
+        )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="search_files_filesystem",
+            details={
+                "result_count": len(matches),
+                "source_location": verified_output.get("folder"),
+                "file_pattern": pattern,
+            },
+            observation=observation,
+        )
+
+
+class CopyFileVerifier(BaseVerifier):
+    tool_names = ("copy_file",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="copy_file_filesystem",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        source_raw = str(
+            output.get("source") or ctx.tool_arguments.get("source") or ""
+        ).strip()
+        dest_raw = str(
+            output.get("destination") or ctx.tool_arguments.get("destination") or ""
+        ).strip()
+        if not dest_raw and not source_raw:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="copy_file_filesystem",
+                details={"reason": "paths_missing"},
+            )
+
+        from hermes.mission.step_context import expected_copy_destination
+
+        if dest_raw and source_raw:
+            dest_path = expected_copy_destination(source_raw, dest_raw)
+        else:
+            dest_path = Path(dest_raw)
+
+        src_path = Path(source_raw) if source_raw else None
+        observation = Observation(
+            source="filesystem",
+            data={
+                "source": source_raw or None,
+                "destination": str(dest_path),
+                "exists": dest_path.is_file(),
+                "size": dest_path.stat().st_size if dest_path.is_file() else None,
+            },
+        )
+
+        if not dest_path.is_file():
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="copy_file_filesystem",
+                details={"reason": "destination_missing", "destination": str(dest_path)},
+                observation=observation,
+            )
+
+        if src_path is not None and src_path.is_file():
+            try:
+                if dest_path.stat().st_size != src_path.stat().st_size:
+                    return VerificationResult(
+                        status=VerificationStatus.FAILED,
+                        method="copy_file_filesystem",
+                        details={
+                            "reason": "size_mismatch",
+                            "source": str(src_path),
+                            "destination": str(dest_path),
+                        },
+                        observation=observation,
+                    )
+            except OSError as exc:
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    method="copy_file_filesystem",
+                    details={"reason": "stat_failed", "error": str(exc)},
+                    observation=observation,
+                )
+
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="copy_file_filesystem",
+            details={"destination": str(dest_path), "size": dest_path.stat().st_size},
+            observation=observation,
+        )

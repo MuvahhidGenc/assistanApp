@@ -1,0 +1,19 @@
+id: browser_report
+title: Tarayici icerigini raporlama
+goal_patterns:
+  - chrome ac
+  - web sayfa
+  - rapor.txt
+  - sayfadaki bilgi
+  - masaustune rapor
+preferred_tools:
+  - open_app
+  - open_url
+  - read_screen_text
+  - write_file
+security_level: normal
+hints:
+  - Tarayici ac, hedef URL'ye git, icerigi oku ve dosyaya yaz.
+  - Rapor dosyasinin olustugunu filesystem ile dogrula.
+validation_rules:
+  - write_file sonrasi dosya varligi dogrulanmali

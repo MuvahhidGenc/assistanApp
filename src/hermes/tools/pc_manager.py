@@ -70,23 +70,37 @@ class PCManager:
         command: str | dict[str, Any],
         run_id: str = "",
         skip_approval: bool = False,
+        *,
+        user_message: str = "",
     ) -> ToolResultPayload:
         tool_name, arguments = parse_pc_command(command)
         tool = self.registry.get(tool_name)
         if not tool:
             raise ValueError(f"Unknown PC tool: {tool_name}")
 
+        execution_target = "client"
+        mission_id: str | None = None
+        step_id: str | None = None
+        if isinstance(command, dict):
+            execution_target = str(command.get("execution_target") or "client")
+            mission_id = command.get("mission_id")
+            step_id = command.get("step_id")
+
         tool_call = ToolCallRequest(
             id=f"pc-{uuid4().hex[:12]}",
             name=tool_name,
             arguments=arguments,
             risk_level=tool.risk_level.value,
+            execution_target=execution_target,
+            mission_id=mission_id,
+            step_id=step_id,
         )
         try:
             return await self.executor.execute_tool_call(
                 tool_call,
                 run_id=run_id,
                 skip_approval=skip_approval,
+                user_message=user_message,
             )
         except ToolApprovalRequiredError:
             raise

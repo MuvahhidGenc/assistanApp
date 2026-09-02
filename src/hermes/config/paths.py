@@ -68,6 +68,14 @@ def client_state_path() -> Path:
     return client_state_dir() / "client.json"
 
 
+def missions_dir() -> Path:
+    return client_state_dir() / "missions"
+
+
+def missions_index_path() -> Path:
+    return missions_dir() / "index.json"
+
+
 def bundled_config_path() -> Path:
     return bundle_root() / "config" / "default.yaml"
 

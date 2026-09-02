@@ -223,6 +223,16 @@ class BackgroundWorker:
             self._app.settings.voice,
             elevenlabs_api_key=self._app.settings.elevenlabs_api_key.get_secret_value(),
         )
+        from hermes.voice.tts import _audit
+
+        _audit(
+            "VOICE_ASSISTANT_ACTIVE",
+            phase="worker_startup",
+            voice_enabled=self._app.settings.voice.enabled,
+            tts_class=type(self._voice.tts).__name__ if self._voice.tts else "none",
+            tts_available=bool(self._voice.tts and self._voice.tts.is_available()),
+            thread=__import__("threading").current_thread().name,
+        )
 
         voice_enabled = self._app.settings.voice.enabled
         wake_enabled = (
@@ -236,6 +246,7 @@ class BackgroundWorker:
         )
         self._wire_voice_callbacks()
         self._wire_agent_callbacks()
+        self._restore_mission_ui_state()
         await self._voice.start()
 
         await self._ensure_session()
@@ -387,9 +398,41 @@ class BackgroundWorker:
                 self.state.set_activity(activity, status=text)
                 self.state.append_message("status", text)
                 self._emit("status", {"message": text})
-                self._emit("state")
+            mission_id = str((extra or {}).get("mission_id") or "").strip() or None
+            if mission_id:
+                self._sync_mission_ui_from_store(mission_id)
+            self._emit("state")
 
         self._app.agent._on_status = on_agent_status
+
+    def _restore_mission_ui_state(self) -> None:
+        from hermes.mission.store import MissionStore
+
+        mission = MissionStore().load_active()
+        if mission is None:
+            self.state.clear_mission_snapshot()
+            return
+        self.state.set_mission_snapshot(
+            mission_id=mission.mission_id,
+            mission_status=mission.status.value,
+            mission_goal=mission.user_goal,
+            mission_progress=mission.progress_ratio,
+        )
+
+    def _sync_mission_ui_from_store(self, mission_id: str | None = None) -> None:
+        from hermes.mission.store import MissionStore
+
+        store = MissionStore()
+        mission = store.load(mission_id) if mission_id else store.load_active()
+        if mission is None:
+            self.state.clear_mission_snapshot()
+            return
+        self.state.set_mission_snapshot(
+            mission_id=mission.mission_id,
+            mission_status=mission.status.value,
+            mission_goal=mission.user_goal,
+            mission_progress=mission.progress_ratio,
+        )
 
     async def _reload_config(self) -> None:
         logger.info("worker_reload_config")

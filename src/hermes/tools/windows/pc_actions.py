@@ -296,10 +296,39 @@ class ReadScreenTextTool(BaseTool):
     category = "computer_control"
 
     async def execute(self, **kwargs: Any) -> ToolExecutionResult:
-        from hermes.vision import ocr_screen
+        from hermes.vision import ocr_browser_window, ocr_screen
+        from hermes.tools.windows.input_backend import find_app_window_title, list_window_titles
+
+        focus_browser = bool(kwargs.get("focus_browser", True))
+        strategy = str(kwargs.get("strategy") or kwargs.get("ocr_strategy") or "").strip()
+        app = str(kwargs.get("app") or "chrome").strip().casefold() or "chrome"
+        title_hint = str(kwargs.get("title_hint") or kwargs.get("window_title_hint") or "").strip()
 
         try:
-            data = await run_in_thread(lambda: ocr_screen(include_boxes=True))
+            if focus_browser or strategy in {"focus_browser_retry", "retry_screen_ocr"}:
+                data = await run_in_thread(
+                    lambda: ocr_browser_window(
+                        app,
+                        title_hint=title_hint,
+                        include_boxes=True,
+                    ),
+                )
+            else:
+                data = await run_in_thread(lambda: ocr_screen(include_boxes=True))
+            if isinstance(data, dict):
+                title = (
+                    find_app_window_title(app, title_hint=title_hint)
+                    or find_app_window_title("edge", title_hint=title_hint)
+                )
+                if not title:
+                    titles = list_window_titles()
+                    title = titles[0] if titles else ""
+                if title and not data.get("window_title"):
+                    data["window_title"] = title
+                if title_hint and not data.get("title_hint"):
+                    data["title_hint"] = title_hint
+                has_text = bool(str(data.get("text") or "").strip()) or bool(data.get("lines"))
+                data["content_type"] = "screen_text" if has_text else "browser_window"
             return ToolExecutionResult(success=True, output=data, verified=True)
         except Exception as exc:
             return ToolExecutionResult(success=False, error=str(exc))
@@ -314,15 +343,28 @@ class CreateFolderTool(BaseTool):
     async def execute(self, path: str = "", **kwargs: Any) -> ToolExecutionResult:
         from pathlib import Path
 
-        raw = (path or kwargs.get("name") or "Hermes").strip()
+        raw = (path or kwargs.get("name") or "").strip()
         if not raw:
             return ToolExecutionResult(success=False, error="path gerekli")
         target = Path(raw).expanduser()
         if not target.is_absolute():
             target = Path.home() / "Desktop" / target
         try:
+            from hermes.tools.windows.input_backend import wants_recreate
+
+            already_existed = target.exists() and target.is_dir()
+            if already_existed and not wants_recreate(str(kwargs.get("user_message") or "")):
+                return ToolExecutionResult(
+                    success=True,
+                    output={"path": str(target), "already_existed": True},
+                    verified=True,
+                )
             target.mkdir(parents=True, exist_ok=True)
-            return ToolExecutionResult(success=True, output={"path": str(target)}, verified=True)
+            return ToolExecutionResult(
+                success=True,
+                output={"path": str(target), "already_existed": already_existed},
+                verified=True,
+            )
         except Exception as exc:
             return ToolExecutionResult(success=False, error=str(exc))
 
@@ -352,13 +394,17 @@ class OpenPathTool(BaseTool):
         if not target.exists():
             return ToolExecutionResult(success=False, error=f"Yol bulunamadi: {target}")
         try:
-            import os
+            from hermes.tools.windows.input_backend import open_path_on_windows
 
-            os.startfile(str(target))  # noqa: S606
+            data = await run_in_thread(
+                open_path_on_windows,
+                target,
+                user_message=str(kwargs.get("user_message") or ""),
+            )
             return ToolExecutionResult(
                 success=True,
-                output={"path": str(target), "opened": True},
-                verified=True,
+                output=data,
+                verified=bool(data.get("verified")),
             )
         except Exception as exc:
             return ToolExecutionResult(success=False, error=str(exc))

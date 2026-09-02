@@ -130,36 +130,11 @@ def spoken_line_for_tool(tool_name: str, intent: Any = None) -> str:
 
 
 def spoken_quick_ack(user_message: str) -> str:
-    from hermes.agent.local_intent import guess_file_action, guess_install_action, guess_local_action
+    from hermes.voice.response_synthesizer import synthesize_task_started
 
-    for guesser in (guess_file_action, guess_install_action, guess_local_action):
-        intent = guesser(user_message)
-        if intent:
-            return spoken_line_for_tool(intent.request.name, intent)
-
-    lower = (user_message or "").casefold()
-    if any(w in lower for w in ("sil", "delete", "kaldir", "kaldır")):
-        return "Tamam, siliyorum."
-    if any(w in lower for w in ("word", "docx", "belge", "yazi", "yazı")):
-        return "Tamam, belgeyi hazırlıyorum."
-    if any(w in lower for w in ("indir", "download")):
-        return "Tamam, indiriyorum."
-    if any(w in lower for w in ("klon", "clone", "github", "repo")):
-        return "Tamam, repoyu klonluyorum."
-    if any(w in lower for w in ("ac ", "aç ", "open", "baslat", "başlat")):
-        return "Tamam, açıyorum."
-    if any(w in lower for w in ("dns", "video", "youtube", "chrome", "kur", "klasor", "klasör")):
-        return "Anladım, hallediyorum."
-    if any(w in lower for w in ("ekran", "oku", "bak", "sonuc", "sonuç", "gör", "gor")):
-        return "Ekrana bakıyorum."
-    if any(w in lower for w in ("asagi", "aşağı", "yukari", "yukarı", "kaydir", "kaydır", "scroll")):
-        return "Tamam, kaydırıyorum."
-    if any(w in lower for w in ("tikla", "tıkla", "bas ", "basla", "başla")):
-        return "Tamam, tıklıyorum."
-    if any(w in lower for w in ("geri git", "geri", "tam ekran", "büyük ekran", "buyuk ekran")):
-        return "Tamam, hallediyorum."
-    if any(w in lower for w in ("masaust", "masaüst")):
-        return "Masaüstünü gösteriyorum."
+    line = synthesize_task_started(user_message)
+    if line:
+        return line.rstrip(".!?")
     return "Tamam, bakıyorum."
 
 
@@ -194,8 +169,14 @@ def brief_status_line(status: str) -> str:
     return ""
 
 
-def brief_spoken_reply(text: str) -> str:
+def brief_spoken_reply(text: str, *, user_message: str = "") -> str:
     """Short conversational voice line; full answer stays in chat."""
+    from hermes.voice.response_synthesizer import synthesize_task_completed
+
+    synthesized = synthesize_task_completed(user_message, text)
+    if synthesized:
+        first = _first_sentence(synthesized)
+        return first.rstrip(".!?")
     cleaned = _clean_text(text)
     if not cleaned:
         return "Buradayım abi."

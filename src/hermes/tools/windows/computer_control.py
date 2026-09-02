@@ -51,8 +51,18 @@ class OpenAppTool(BaseTool):
         if not app:
             return ToolExecutionResult(success=False, error="app required")
         try:
-            data = await run_in_thread(open_application, app, args=args)
-            return ToolExecutionResult(success=True, output=data, verified=True)
+            data = await run_in_thread(
+                open_application,
+                app,
+                args=args,
+                user_message=str(kwargs.get("user_message") or ""),
+            )
+            verified = bool(
+                data.get("reused")
+                or data.get("verified")
+                or data.get("focused")
+            )
+            return ToolExecutionResult(success=True, output=data, verified=verified)
         except Exception as exc:
             return ToolExecutionResult(success=False, error=str(exc))
 

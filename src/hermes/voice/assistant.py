@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -9,11 +10,15 @@ from typing import Any
 from hermes.agent.orchestrator import AgentOrchestrator
 from hermes.config.settings import VoiceSettings
 from hermes.utils.logging import get_logger
+from hermes.voice import tts as tts_pipeline
 from hermes.voice.stt import NullSpeechToText, SpeechToText, create_stt
 from hermes.voice.tts import NullTextToSpeech, TextToSpeech, create_tts
+from hermes.voice.tts_trace import reset_correlation_id, set_correlation_id, trace_fields
 from hermes.voice.wake_word import DEFAULT_WAKE_WORDS, detect_wake_word, is_stop_command
 
 logger = get_logger(__name__)
+
+_START_SPEECH_DELAY_SECONDS = 0.85
 
 OnUserMessage = Callable[[str], Awaitable[None] | None]
 
@@ -45,16 +50,20 @@ class VoiceAssistant:
     _voice_session_active: bool = field(default=False, init=False)
     _last_spoken_text: str = field(default="", init=False)
     _last_spoken_at: float = field(default=0.0, init=False)
+    _tts_error_notified: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         if self.stt is None:
             self.stt = create_stt(language=self.settings.stt_language)
         if self.tts is None:
+            from hermes.config.credentials import get_elevenlabs_api_key
+
             self.tts = create_tts(
                 backend=self.settings.tts_backend,
                 language=self.settings.tts_language,
                 gender=self.settings.tts_gender,
                 voice=self.settings.tts_voice,
+                elevenlabs_api_key=get_elevenlabs_api_key(),
                 elevenlabs_voice_id=self.settings.elevenlabs_voice_id,
                 elevenlabs_model=self.settings.elevenlabs_model,
             )
@@ -159,22 +168,53 @@ class VoiceAssistant:
             if result is not None:
                 await result
 
-    async def _speak_prompt(self, text: str, *, resume_activity: str = "listening") -> None:
-        if not self._voice_enabled or not self.tts or not self.tts.is_available():
-            return
+    async def _notify_tts_error(self, message: str) -> None:
+        """Log TTS failure only — never expose technical details in chat UI."""
+        logger.error("tts_failuretts_pipeline._audit", detail=message)
+
+    async def _speak_prompt(
+        self,
+        text: str,
+        *,
+        resume_activity: str = "listening",
+        phase: str = "response",
+    ) -> bool:
+        if not self._voice_enabled:
+            tts_pipeline._audit("TTS_SKIPPED", reason="voice_disabled", phase=phase)
+            return False
+        if not self.tts:
+            logger.error("tts_failuretts_pipeline._audit", **trace_fields(detail="tts_engine_missing"))
+            return False
+        if not self.tts.is_available():
+            logger.error("tts_failuretts_pipeline._audit", **trace_fields(detail="tts_engine_unavailable"))
+            return False
         cleaned = text.strip()
         if not cleaned:
-            return
+            tts_pipeline._audit("TTS_SKIPPED", reason="empty_text", phase=phase)
+            return False
         now = time.monotonic()
         if cleaned == self._last_spoken_text and (now - self._last_spoken_at) < 4.0:
-            return
-        self._last_spoken_text = cleaned
-        self._last_spoken_at = now
+            tts_pipeline._audit("TTS_SKIPPED", reason="dedup", phase=phase, chars=len(cleaned))
+            return True
         try:
             await self._set_activity("speaking")
+            tts_pipeline._audit("TTS_SPEAK_BEGIN", phase=phase, chars=len(cleaned))
             await self.tts.speak(cleaned)
+            self._last_spoken_text = cleaned
+            self._last_spoken_at = time.monotonic()
+            self._tts_error_notified = False
+            logger.info("tts_prompt_spoke", **trace_fields(chars=len(cleaned), phase=phase))
+            return True
         except Exception as exc:
-            logger.warning("tts_prompt_error", error=str(exc))
+            logger.error(
+                "tts_prompt_error",
+                **trace_fields(
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                    phase=phase,
+                ),
+            )
+            return False
         finally:
             await self._set_activity(resume_activity)
 
@@ -195,48 +235,127 @@ class VoiceAssistant:
             await self._notify_status("Durduruldu.")
             return
 
-        await self.stop_active()
-        self._cancelled = False
-        if source == "voice":
-            await self._notify_user_input(text, source)
-        await self._set_activity("thinking")
+        correlation_id = uuid.uuid4().hex[:12]
+        trace_token = set_correlation_id(correlation_id)
+        started_at = time.monotonic()
+        logger.info(
+            "USER_MESSAGE",
+            **trace_fields(source=source, chars=len(text), text_preview=text[:120]),
+        )
+        tts_pipeline._audit(
+            "VOICE_ASSISTANT_ACTIVE",
+            voice_enabled=self._voice_enabled,
+            speak_response=speak_response,
+            tts_class=type(self.tts).__name__ if self.tts else "none",
+            tts_available=bool(self.tts and self.tts.is_available()),
+        )
 
-        if speak_response and self._voice_enabled and self.tts and self.tts.is_available():
-            try:
-                from hermes.voice.spoken import spoken_quick_ack
-
-                await self._set_activity("speaking")
-                await self.tts.speak(spoken_quick_ack(text))
-            except Exception as exc:
-                logger.warning("tts_ack_error", error=str(exc))
-
-        async def _run() -> str:
-            await self._set_activity("thinking")
-            return await self.agent.process_message(text)
-
-        self._active_request = asyncio.create_task(_run())
         try:
-            response = await self._active_request
-        except asyncio.CancelledError:
-            await self._notify_status("Islem iptal edildi.")
-            self._active_request = None
-            return
-        finally:
-            self._active_request = None
+            await self.stop_active()
+            self._cancelled = False
+            if source == "voice":
+                await self._notify_user_input(text, source)
+            await self._set_activity("thinking")
 
-        if self._cancelled or not response.strip():
-            return
+            start_line: str | None = None
+            start_task: asyncio.Task[None] | None = None
+            start_spoken = False
 
-        await self._notify_response(response.strip(), source=source)
-        if speak_response and self._voice_enabled and self.tts and self.tts.is_available():
+            if speak_response and self._voice_enabled and self.tts and self.tts.is_available():
+                try:
+                    from hermes.voice.response_synthesizer import synthesize_task_started
+
+                    start_line = synthesize_task_started(text)
+                    tts_pipeline._audit(
+                        "SYNTHESIZER_CALLED",
+                        phase="started",
+                        line=start_line or "",
+                        will_delay=True,
+                    )
+                except Exception as exc:
+                    logger.warning("tts_start_plan_error", **trace_fields(error=str(exc)))
+                    start_line = None
+
+            async def _delayed_start() -> None:
+                nonlocal start_spoken
+                try:
+                    await asyncio.sleep(_START_SPEECH_DELAY_SECONDS)
+                except asyncio.CancelledError:
+                    return
+                if self._cancelled or start_spoken or not start_line:
+                    return
+                elapsed_ms = (time.monotonic() - started_at) * 1000.0
+                if elapsed_ms < _START_SPEECH_DELAY_SECONDS * 1000.0:
+                    return
+                start_spoken = True
+                tts_pipeline._audit("SYNTHESIZER_CALLED", phase="started_speak", line=start_line)
+                await self._speak_prompt(start_line, resume_activity="thinking", phase="started")
+
+            if (
+                start_line
+                and speak_response
+                and self._voice_enabled
+                and self.tts
+                and self.tts.is_available()
+            ):
+                start_task = asyncio.create_task(_delayed_start())
+
+            async def _run() -> str:
+                await self._set_activity("thinking")
+                return await self.agent.process_message(text)
+
+            self._active_request = asyncio.create_task(_run())
             try:
-                from hermes.voice.spoken import brief_spoken_reply
+                response = await self._active_request
+            except asyncio.CancelledError:
+                if start_task and not start_task.done():
+                    start_task.cancel()
+                await self._notify_status("Islem iptal edildi.")
+                self._active_request = None
+                return
+            finally:
+                if start_task and not start_task.done():
+                    start_task.cancel()
+                    try:
+                        await start_task
+                    except asyncio.CancelledError:
+                        pass
+                self._active_request = None
 
-                await self._set_activity("speaking")
-                await self.tts.speak(brief_spoken_reply(response.strip()))
-            except Exception as exc:
-                logger.warning("tts_speak_error", error=str(exc))
-        await self._set_activity("idle")
+            if self._cancelled or not response.strip():
+                return
+
+            await self._notify_response(response.strip(), source=source)
+            if speak_response and self._voice_enabled and self.tts and self.tts.is_available():
+                try:
+                    from hermes.voice.response_synthesizer import (
+                        is_duplicate_speech,
+                        synthesize_task_completed,
+                    )
+
+                    tool_results = list(getattr(self.agent.state, "last_tool_results", []) or [])
+                    complete_line = synthesize_task_completed(text, response.strip(), tool_results)
+                    tts_pipeline._audit(
+                        "SYNTHESIZER_CALLED",
+                        phase="completed",
+                        line=complete_line or "",
+                    )
+                    if complete_line and not is_duplicate_speech(start_line or "", complete_line):
+                        await self._speak_prompt(
+                            complete_line,
+                            resume_activity="idle",
+                            phase="completed",
+                        )
+                    elif not complete_line:
+                        tts_pipeline._audit("TTS_SKIPPED", reason="empty_synthesizer_line", phase="completed")
+                        await self._set_activity("idle")
+                except Exception as exc:
+                    logger.warning("tts_speak_error", **trace_fields(error=str(exc)))
+                    await self._set_activity("idle")
+            else:
+                await self._set_activity("idle")
+        finally:
+            reset_correlation_id(trace_token)
 
     async def stop_active(self) -> None:
         self._cancelled = True
@@ -360,9 +479,9 @@ def build_voice_assistant(
     elevenlabs_api_key: str = "",
 ) -> VoiceAssistant:
     assistant = VoiceAssistant(settings=settings, agent=agent, stt=stt, tts=tts)
-    from hermes.config.credentials import get_elevenlabs_api_key
+    from hermes.config.credentials import resolve_elevenlabs_api_key
 
-    api_key = (elevenlabs_api_key or get_elevenlabs_api_key()).strip()
+    api_key, key_source = resolve_elevenlabs_api_key(config_value=elevenlabs_api_key)
     if tts is None:
         assistant.tts = create_tts(
             backend=settings.tts_backend,
@@ -373,4 +492,10 @@ def build_voice_assistant(
             elevenlabs_voice_id=settings.elevenlabs_voice_id,
             elevenlabs_model=settings.elevenlabs_model,
         )
+        if not assistant.tts.is_available():
+            logger.error(
+                "voice_assistant_tts_unavailable",
+                backend=settings.tts_backend,
+                key_source=key_source,
+            )
     return assistant
