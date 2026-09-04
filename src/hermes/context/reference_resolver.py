@@ -96,6 +96,7 @@ _CONTINUATION_SIGNALS = (
 class ResolutionResult:
     resolved_references: dict[str, str] = field(default_factory=dict)
     intent: Any | None = None
+    follow_up_intents: list[Any] = field(default_factory=list)
     ambiguous: bool = False
     clarification: str = ""
     is_new_task: bool = True
@@ -458,7 +459,7 @@ class ReferenceResolver:
                         resolved_references={"target_file": str(normalized)}
                     )
 
-        explicit = match_named_file(text, ctx.recent_files, allow_stem=False)
+        explicit = match_named_file(text, ctx.recent_files, allow_stem=False, ctx=ctx)
         if explicit.resolved_references.get("target_file"):
             path = explicit.resolved_references["target_file"]
             if Path(path).name.casefold() != Path(new_name).name.casefold():
@@ -638,12 +639,23 @@ class ReferenceResolver:
             desktop_candidate = Path.home() / "Desktop" / file_name
             _add_match(_normalize_existing_path(str(desktop_candidate)))
             if len(matches) > 1:
-                labels = [Path(item).name for item in matches[:4]]
-                return ResolutionResult(
-                    ambiguous=True,
-                    clarification=f"Birden fazla eslesme var: {', '.join(labels)}. Hangisini acayim?",
-                    resolved_references={"candidates": matches[:6]},
+                from hermes.context.file_decision import build_open_results_from_decision, decide_file_candidates
+
+                decision = decide_file_candidates(
+                    matches,
+                    ctx,
+                    text=text,
+                    filename=file_name,
+                    action="open",
                 )
+                primary, follow_ups = build_open_results_from_decision(
+                    decision,
+                    filename=file_name,
+                    build_open_path_result=_build_open_path_result,
+                )
+                if primary is not None:
+                    primary.follow_up_intents = follow_ups
+                    return primary
             if len(matches) == 1:
                 return _build_open_path_result(matches[0])
 
@@ -659,7 +671,7 @@ class ReferenceResolver:
                     built.is_new_task = False
                     return built
 
-        named = match_named_file(text, ctx.recent_files)
+        named = match_named_file(text, ctx.recent_files, ctx=ctx)
         if named.ambiguous:
             return named
         if named.resolved_references.get("target_file"):
@@ -972,7 +984,7 @@ class ReferenceResolver:
                     clarification="Son olusturulan dosya bulunamadi. Hangi dosyayi kastediyorsun?",
                 )
 
-            stem_named = match_named_file(text, ctx.recent_files, allow_stem=True)
+            stem_named = match_named_file(text, ctx.recent_files, allow_stem=True, ctx=ctx)
             if stem_named.resolved_references.get("target_file") or stem_named.ambiguous:
                 return stem_named
 
@@ -995,13 +1007,25 @@ class ReferenceResolver:
             pattern.search(text) for pattern in _CONTENT_MODIFY_PATTERNS
         ):
             if len(ctx.recent_files) > 1:
-                preview = ", ".join(Path(item).name for item in ctx.recent_files[:3])
-                return ResolutionResult(
-                    ambiguous=True,
-                    clarification=(
-                        f"Birden fazla dosya var ({preview}). Hangisini kastediyorsun?"
-                    ),
+                from hermes.context.file_decision import decide_file_candidates
+
+                decision = decide_file_candidates(
+                    list(ctx.recent_files),
+                    ctx,
+                    text=text,
+                    action="modify" if prefer_modified else "open",
                 )
+                if decision.chosen_paths:
+                    return ResolutionResult(
+                        resolved_references={"target_file": decision.chosen_paths[0]}
+                    )
+                if decision.clarification:
+                    return ResolutionResult(
+                        ambiguous=True,
+                        clarification=decision.clarification,
+                        resolved_references={"candidates": "|".join(decision.candidates)},
+                        is_new_task=False,
+                    )
             return ResolutionResult(
                 ambiguous=True,
                 clarification="Hangi dosyayi kastediyorsun?",
@@ -1010,7 +1034,11 @@ class ReferenceResolver:
 
 
 def match_named_file(
-    text: str, recent_files: list[str], *, allow_stem: bool = True
+    text: str,
+    recent_files: list[str],
+    *,
+    allow_stem: bool = True,
+    ctx: ConversationalContext | None = None,
 ) -> ResolutionResult:
     lower = text.casefold()
     matches: list[str] = []
@@ -1025,11 +1053,36 @@ def match_named_file(
             matches.append(path)
     if len(matches) == 1:
         return ResolutionResult(resolved_references={"target_file": matches[0]})
+    if len(matches) > 1 and ctx is not None:
+        from hermes.context.file_decision import build_open_results_from_decision, decide_file_candidates
+        from hermes.context.folder_reference import extract_explicit_filename
+
+        filename = extract_explicit_filename(text) or Path(matches[0]).name
+        decision = decide_file_candidates(
+            matches,
+            ctx,
+            text=text,
+            filename=filename,
+            action="open",
+        )
+        primary, follow_ups = build_open_results_from_decision(
+            decision,
+            filename=filename,
+            build_open_path_result=_build_open_path_result,
+        )
+        if primary is not None:
+            primary.follow_up_intents = follow_ups
+            return primary
     if len(matches) > 1:
-        preview = ", ".join(Path(item).name for item in matches)
+        from hermes.context.file_decision import human_path_label
+
+        preview = ", ".join(human_path_label(item) for item in matches[:3])
         return ResolutionResult(
             ambiguous=True,
-            clarification=f"Birden fazla eslesme var: {preview}. Hangisini kastediyorsun?",
+            clarification=(
+                f"Ayni isimli birkac dosya var ({preview}). Hangisini kastediyorsun?"
+            ),
+            resolved_references={"candidates": "|".join(matches[:6])},
         )
     return ResolutionResult()
 

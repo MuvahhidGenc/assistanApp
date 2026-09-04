@@ -35,6 +35,31 @@ from hermes.mission.store import MissionStore
 logger = get_logger(__name__)
 
 _MAX_LOCAL_TOOL_ITERATIONS = 25
+_LLM_UNAVAILABLE_NOTICE = (
+    "Anlama katmanina su an ulasilamadi; bilinen yerel yollarla devam ediyorum."
+)
+
+
+def _describe_capability_gap(plan: Any) -> str:
+    """Say what is missing and what could be done instead.
+
+    Understanding a request but lacking the means to carry it out is a
+    different answer from not understanding it, and the user is owed the
+    difference.
+    """
+    missing = ", ".join(plan.unavailable_capabilities) or "gereken yetenek"
+    lines = [f"Bunu su an yapamiyorum: {missing} bu bilgisayarda mevcut degil."]
+
+    offered = sorted(
+        {
+            name
+            for names in plan.alternatives.values()
+            for name in names
+        }
+    )
+    if offered:
+        lines.append("Bunun yerine su yeteneklerle yardimci olabilirim: " + ", ".join(offered) + ".")
+    return "\n".join(lines)
 
 
 class AgentPhase(StrEnum):
@@ -48,6 +73,7 @@ class AgentPhase(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    WAITING_FOR_USER = "waiting_for_user"
 
 
 SESSION_RENEWED_NOTICE = (
@@ -93,11 +119,16 @@ class AgentOrchestrator:
         self._local_context = LocalClientContext(self._registry, client_name=settings.client.name)
         self._on_status = on_status
         self._on_approval_required = on_approval_required
-        self._policy = PolicyEngine(settings.security.require_approval_for)
+        self._policy = PolicyEngine(
+            settings.security.require_approval_for, registry=self._registry
+        )
         self._audit = AuditLogger(settings.security.audit_log_path, settings.security.redact_patterns)
         self._approval = ApprovalManager()
         self._executor = ToolExecutor(self._registry, self._policy, self._audit, self._approval)
         self._mission_store = mission_store or _MissionStore()
+        self._intent_understanding: Any = None
+        self._intent_router: Any = None
+        self._skill_executor: Any = None
         self.state = AgentState()
 
     async def _set_status(self, phase: AgentPhase, message: str, extra: Any | None = None) -> None:
@@ -301,12 +332,14 @@ class AgentOrchestrator:
         from hermes.mission.planner import MissionPlanner
         from hermes.agent.status_messages import format_mission_planning_status
 
+        self._intent_layer()
         planner = MissionPlanner(self._server, self._registry)
         engine = MissionEngine(
             self._mission_store,
             self._registry,
             self._executor,
             execute_local_tool=self._execute_local_tool,
+            skill_executor=self._skill_executor,
         )
         await self._set_status(
             AgentPhase.PLANNING,
@@ -314,6 +347,331 @@ class AgentOrchestrator:
             {"mission_id": mission_id},
         )
         return await engine.run(mission_id, planner)
+
+    def _intent_layer(self) -> tuple[Any, Any]:
+        from hermes.intent.router import IntentRouter
+        from hermes.intent.understanding import IntentUnderstanding
+        from hermes.skills.executor import SkillExecutor
+
+        if self._intent_understanding is None:
+            self._skill_executor = SkillExecutor(self._registry, self._executor)
+            self._intent_understanding = IntentUnderstanding(self._server, self._registry)
+            self._intent_router = IntentRouter(self._registry, self._skill_executor)
+        return self._intent_understanding, self._intent_router
+
+    @staticmethod
+    def _context_can_ground(conv_ctx: Any) -> bool:
+        """Whether the session already holds a target the next sentence can use."""
+        return bool(
+            getattr(conv_ctx, "active_file", None)
+            or getattr(conv_ctx, "last_created_file", None)
+            or getattr(conv_ctx, "last_opened_file", None)
+            or getattr(conv_ctx, "last_url", None)
+            or getattr(conv_ctx, "last_browser_url", None)
+            or getattr(conv_ctx, "last_application", None)
+            or getattr(conv_ctx, "active_folder", None)
+        )
+
+    def _local_intent_is_complete(self, intent: Any) -> bool:
+        """Fast paths may only run when every required argument is already filled.
+
+        A match like "su siteye gir" with no URL is a GoalRouter hit, not a
+        finished action — understanding plus session context has to take it.
+        """
+        request = getattr(intent, "request", None)
+        if request is None or not getattr(request, "name", None):
+            return False
+        tool = self._registry.get(request.name)
+        arguments = dict(getattr(request, "arguments", None) or {})
+        if tool is None:
+            # Some resolver intents (create_file) are handled by the executor
+            # without a registry entry. Empty arguments still mean "incomplete".
+            return any(value not in (None, "") for value in arguments.values())
+        required = (tool.get_parameters_schema() or {}).get("required") or []
+        return all(arguments.get(name) not in (None, "") for name in required)
+
+    async def _try_complete_local_fast_path(
+        self, message: str, conv_ctx: Any, resolved_refs: dict[str, str]
+    ) -> str | None:
+        """Run a fully bound single local command without consulting the model."""
+        from hermes.agent.local_intent import (
+            guess_file_action,
+            guess_install_action,
+            guess_local_action,
+            summarize_local_result,
+        )
+        from hermes.agent.status_messages import format_completed_status
+        from hermes.client.session_store import append_conversation_turn
+        from hermes.mission.write_content import is_placeholder_write_content
+
+        file_intent = guess_file_action(
+            message, resolved_references=resolved_refs, conv_ctx=conv_ctx
+        )
+        if file_intent and self._local_intent_is_complete(file_intent):
+            placeholder = file_intent.request.name == "write_file" and (
+                is_placeholder_write_content(
+                    str(file_intent.request.arguments.get("content") or "")
+                )
+            )
+            if not placeholder:
+                text = await self._execute_resolved_local_intent(
+                    file_intent, message, conv_ctx, resolved_references=resolved_refs
+                )
+                if self.state.session_notice:
+                    text = f"{self.state.session_notice}\n\n{text}"
+                append_conversation_turn("user", message)
+                append_conversation_turn("assistant", text)
+                await self._set_status(AgentPhase.COMPLETED, "Dosya islemi tamamlandi.")
+                return text
+
+        install_intent = guess_install_action(message)
+        if install_intent and self._local_intent_is_complete(install_intent):
+            result = await self._execute_local_tool(
+                install_intent.request,
+                run_id=f"local-{uuid4().hex[:12]}",
+                user_message=message,
+            )
+            self._remember_tool_result(install_intent.request.name, result, message)
+            self._update_conversational_context(conv_ctx, install_intent.request.name, result)
+            conv_ctx.save()
+            text = summarize_local_result(install_intent, result)
+            if self.state.session_notice:
+                text = f"{self.state.session_notice}\n\n{text}"
+            append_conversation_turn("user", message)
+            append_conversation_turn("assistant", text)
+            await self._set_status(AgentPhase.COMPLETED, "Kurulum tamamlandi.")
+            return text
+
+        local = guess_local_action(
+            message, resolved_references=resolved_refs, conv_ctx=conv_ctx
+        )
+        if local and self._local_intent_is_complete(local):
+            tool_name = local.request.name
+            if tool_name in (
+                "write_file",
+                "create_file",
+                "open_path",
+                "create_folder",
+                "delete_path",
+                "list_directory",
+            ):
+                text = await self._execute_resolved_local_intent(
+                    local, message, conv_ctx, resolved_references=resolved_refs
+                )
+            else:
+                result = await self._execute_local_tool(
+                    local.request,
+                    run_id=f"local-{uuid4().hex[:12]}",
+                    user_message=message,
+                )
+                self._remember_tool_result(local.request.name, result, message)
+                self._update_conversational_context(conv_ctx, local.request.name, result)
+                conv_ctx.save()
+                text = summarize_local_result(local, result)
+            if self.state.session_notice:
+                text = f"{self.state.session_notice}\n\n{text}"
+            append_conversation_turn("user", message)
+            append_conversation_turn("assistant", text)
+            await self._set_status(AgentPhase.COMPLETED, format_completed_status())
+            return text
+        return None
+
+    async def _handle_with_intent(self, message: str, conv_ctx: Any) -> str | None:
+        """Understand the message and carry it out through the usual chain.
+
+        Returns None only when the model cannot be reached, so the
+        deterministic handlers remain a fallback rather than a second router.
+        A parsed intent is always routed, even if validation found a gap.
+        """
+        from hermes.client.session_store import load_conversation_history
+        from hermes.intent.router import RouteKind
+
+        understanding, router = self._intent_layer()
+        history = [
+            f"{turn['role']}: {turn['content']}"
+            for turn in load_conversation_history()[-6:]
+        ]
+
+        await self._set_status(AgentPhase.PLANNING, "Ne istedigini anlamaya calisiyorum...")
+        result = await understanding.understand(
+            message, context=conv_ctx, history=history or None
+        )
+        if result.unavailable:
+            self.state.metadata["intent_unavailable"] = True
+            logger.info(
+                "intent_layer_unavailable",
+                error=(result.error or "")[:200],
+            )
+            return None
+
+        if result.intent is None:
+            logger.info(
+                "intent_layer_unparseable",
+                error=(result.error or "")[:200],
+            )
+            return await self._finish_intent_turn(
+                message,
+                "Istedigini yapilandirilmis olarak anlayamadim. "
+                "Ne yapmami istedigini biraz daha acik yazar misin?",
+                conv_ctx,
+                AgentPhase.WAITING_FOR_USER,
+            )
+
+        plan = router.route(result.intent, confidence=result.confidence, context=conv_ctx)
+        self._store_routing_trace(message, result.intent, plan)
+        conv_ctx.record_intent(
+            result.intent.to_dict(),
+            route_kind=str(plan.kind),
+        )
+        logger.info(
+            "intent_layer_routed",
+            route=str(plan.kind),
+            confidence=str(result.confidence),
+            capabilities=list(result.intent.required_capabilities),
+            tools=[step.tool_name for step in plan.steps],
+            tool_source="capability_resolver",
+        )
+
+        if plan.kind is RouteKind.CONVERSATION:
+            reply = plan.question or result.intent.reply or "Nasil yardimci olabilirim?"
+            return await self._finish_intent_turn(
+                message, reply, conv_ctx, AgentPhase.COMPLETED, intent=result.intent, plan=plan
+            )
+
+        if plan.kind is RouteKind.QUESTION:
+            return await self._finish_intent_turn(
+                message,
+                plan.question,
+                conv_ctx,
+                AgentPhase.WAITING_FOR_USER,
+                intent=result.intent,
+                plan=plan,
+            )
+
+        if plan.kind is RouteKind.UNSUPPORTED:
+            return await self._finish_intent_turn(
+                message,
+                _describe_capability_gap(plan),
+                conv_ctx,
+                AgentPhase.FAILED,
+                intent=result.intent,
+                plan=plan,
+            )
+
+        if plan.kind is RouteKind.SKILL:
+            outcome = await self._skill_executor.execute(
+                plan.skill_id, inputs=plan.skill_inputs, context=conv_ctx
+            )
+            phase = AgentPhase.COMPLETED if outcome.success else AgentPhase.FAILED
+            return await self._finish_intent_turn(
+                message,
+                outcome.summary,
+                conv_ctx,
+                phase,
+                intent=result.intent,
+                plan=plan,
+            )
+
+        return await self._run_intent_mission(message, plan, result.intent, conv_ctx)
+
+    async def _run_intent_mission(
+        self, message: str, plan: Any, intent: Any, conv_ctx: Any
+    ) -> str | None:
+        """Hand routed steps to the mission engine as a pre-validated plan."""
+        working_context = {
+            "agent_intent": intent.to_dict(),
+            "resolved_references": conv_ctx.resolved_references(),
+        }
+        mission = self._mission_store.create_mission(
+            message, working_context=working_context
+        )
+        mission.steps = list(plan.steps)
+        mission.plan_validated = True
+        self._mission_store.save(mission)
+
+        conv_ctx.active_mission_id = mission.mission_id
+        conv_ctx.set_current_objective(intent.goal or message)
+        self._mission_store.snapshot_context(
+            mission.mission_id, conv_ctx.snapshot_for_mission()
+        )
+        conv_ctx.save()
+        self.state.metadata["mission_id"] = mission.mission_id
+
+        engine_result = await self._run_mission_engine(mission.mission_id)
+        if not engine_result.handled:
+            return await self._finish_intent_turn(
+                message,
+                engine_result.summary
+                or "Gorevi mevcut araclarla tamamlayamadim.",
+                conv_ctx,
+                AgentPhase.FAILED,
+                intent=intent,
+                plan=plan,
+            )
+        text = await self._apply_mission_engine_result(
+            mission.mission_id, engine_result, conv_ctx, message
+        )
+        conv_ctx.record_intent(
+            intent.to_dict(),
+            route_kind=str(getattr(plan, "kind", "")),
+            result=text,
+        )
+        conv_ctx.save()
+        if self.state.session_notice and self.state.session_notice not in text:
+            text = f"{self.state.session_notice}\n\n{text}"
+        return text
+
+    def _store_routing_trace(self, message: str, intent: Any, plan: Any) -> None:
+        self.state.metadata["faz_f_trace"] = {
+            "USER_INPUT": message,
+            "INTENT": intent.goal if intent is not None else "",
+            "REQUIRED_CAPABILITIES": list(getattr(intent, "required_capabilities", ()) or ()),
+            "SELECTED_SKILL_OR_MISSION": getattr(plan, "skill_id", "")
+            or ("mission" if getattr(plan, "steps", None) else str(getattr(plan, "kind", ""))),
+            "SELECTED_LOCAL_TOOLS": [
+                step.tool_name for step in (getattr(plan, "steps", None) or []) if step.tool_name
+            ],
+            "TOOL_SOURCE": "capability_resolver",
+            "ROUTE": str(getattr(plan, "kind", "")),
+            "POLICY_RISK": [
+                step.risk_level for step in (getattr(plan, "steps", None) or []) if step.risk_level
+            ],
+            "APPROVAL": bool(getattr(plan, "needs_approval", False)),
+        }
+
+    def _legacy_reply(self, text: str) -> str:
+        if not self.state.metadata.get("intent_unavailable"):
+            return text
+        notice = _LLM_UNAVAILABLE_NOTICE
+        if not text:
+            return notice
+        if notice in text:
+            return text
+        return f"{notice}\n\n{text}"
+
+    async def _finish_intent_turn(
+        self,
+        message: str,
+        text: str,
+        conv_ctx: Any,
+        phase: AgentPhase,
+        *,
+        intent: Any = None,
+        plan: Any = None,
+    ) -> str:
+        from hermes.client.session_store import append_conversation_turn
+
+        if intent is not None:
+            conv_ctx.record_intent(
+                intent.to_dict(),
+                route_kind=str(getattr(plan, "kind", "")),
+                result=text,
+            )
+        append_conversation_turn("user", message)
+        append_conversation_turn("assistant", text)
+        conv_ctx.save()
+        await self._set_status(phase, text[:200])
+        return text
 
     async def initialize_session(self) -> str:
         from hermes.client.session_store import (
@@ -428,17 +786,15 @@ class AgentOrchestrator:
         self.state.metadata["local_tool_count"] = self._local_context.tool_count
 
     async def process_message(self, message: str, session_id: str | None = None) -> str:
-        from hermes.agent.local_intent import guess_local_action, summarize_local_result
-        from hermes.agent.server_tasks import should_defer_to_server
-        from hermes.agent.task_planner import has_actionable_sequence, plan_local_sequence
         from hermes.client.session_store import append_conversation_turn
         from hermes.context.conversational_context import ConversationalContext
         from hermes.context.reference_resolver import ReferenceResolver, ResolutionResult
 
-        max_steps = self._settings.client.max_agent_steps
         self.state.step_count = 0
         self.state.metadata["local_tool_executed_this_turn"] = False
         self.state.metadata.pop("routing_trace", None)
+        self.state.metadata.pop("intent_unavailable", None)
+        self.state.metadata.pop("faz_f_trace", None)
 
         conv_ctx = ConversationalContext.load()
         conv_ctx.reconcile_with_filesystem()
@@ -549,14 +905,18 @@ class AgentOrchestrator:
         self._suspend_active_mission_if_needed(message, conv_ctx, reason="Kullanici yeni gorev istedi")
 
         resolution = ReferenceResolver().resolve(message, conv_ctx)
-        from hermes.mission.selection import should_route_to_mission
-
         from hermes.agent.application_catalog import is_web_or_app_open_message
+        from hermes.agent.task_planner import is_multi_step_message
 
-        if is_web_or_app_open_message(message):
+        bound_single = not is_multi_step_message(message)
+        if is_web_or_app_open_message(message) and bound_single:
             resolution = ResolutionResult(is_new_task=True)
 
-        if resolution.ambiguous and not should_route_to_mission(message):
+        if (
+            resolution.ambiguous
+            and bound_single
+            and not self._context_can_ground(conv_ctx)
+        ):
             text = resolution.clarification
             if self.state.session_notice:
                 text = f"{self.state.session_notice}\n\n{text}"
@@ -566,9 +926,9 @@ class AgentOrchestrator:
             await self._set_status(AgentPhase.UNDERSTANDING, "Referans netlestirme gerekiyor.")
             return text
 
-        if resolution.intent:
-            from hermes.agent.status_messages import format_understanding_status
+        from hermes.agent.status_messages import format_completed_status, format_understanding_status
 
+        if resolution.intent and self._local_intent_is_complete(resolution.intent):
             await self._set_status(AgentPhase.UNDERSTANDING, format_understanding_status())
             text = await self._execute_resolved_local_intent(
                 resolution.intent,
@@ -576,24 +936,30 @@ class AgentOrchestrator:
                 conv_ctx,
                 resolved_references=resolution.resolved_references,
             )
+            for follow_up in resolution.follow_up_intents:
+                extra = await self._execute_resolved_local_intent(
+                    follow_up,
+                    message,
+                    conv_ctx,
+                    resolved_references=resolution.resolved_references,
+                )
+                if extra:
+                    text = f"{text}\n{extra}" if text else extra
             if self.state.session_notice:
                 text = f"{self.state.session_notice}\n\n{text}"
             append_conversation_turn("user", message)
             append_conversation_turn("assistant", text)
-            from hermes.agent.status_messages import format_completed_status
-
             await self._set_status(AgentPhase.COMPLETED, format_completed_status())
             return text
 
         resolved_refs = dict(resolution.resolved_references)
 
         from hermes.agent.goal_router import GoalRouter
-        from hermes.agent.status_messages import format_completed_status, format_understanding_status
 
         goal = GoalRouter(self._registry).route(
             message, conv_ctx, resolved_references=resolved_refs
         )
-        if goal.ambiguous:
+        if bound_single and goal.ambiguous and not self._context_can_ground(conv_ctx):
             text = goal.clarification
             if self.state.session_notice:
                 text = f"{self.state.session_notice}\n\n{text}"
@@ -602,7 +968,7 @@ class AgentOrchestrator:
             conv_ctx.save()
             await self._set_status(AgentPhase.UNDERSTANDING, "Netlestirmem gerekiyor.")
             return text
-        if goal.intent:
+        if bound_single and goal.intent and self._local_intent_is_complete(goal.intent):
             await self._set_status(AgentPhase.UNDERSTANDING, format_understanding_status())
             text = await self._execute_resolved_local_intent(
                 goal.intent,
@@ -617,22 +983,70 @@ class AgentOrchestrator:
             await self._set_status(AgentPhase.COMPLETED, format_completed_status())
             return text
 
-        from hermes.agent.agent_planner import AgentPlanner
-        from hermes.agent.plan_models import PlanningRoute
+        # Single, fully bound local commands (DNS, volume, open one app) stay
+        # fast. Multi-step and incomplete matches fall through to understanding.
+        if bound_single:
+            fast = await self._try_complete_local_fast_path(
+                message, conv_ctx, resolved_refs
+            )
+            if fast is not None:
+                return fast
 
+        # Structured understanding is the primary path for anything that is
+        # not a fully bound single local action. Keyword allowlists no longer
+        # sit in front of it. If the model is unreachable, we fall through.
+        intent_reply = await self._handle_with_intent(message, conv_ctx)
+        if intent_reply is not None:
+            return intent_reply
+
+        return self._legacy_reply(
+            await self._run_legacy_fallback(
+                message, session_id, conv_ctx, resolution, resolved_refs
+            )
+        )
+
+    async def _run_legacy_fallback(
+        self,
+        message: str,
+        session_id: str | None,
+        conv_ctx: Any,
+        resolution: Any,
+        resolved_refs: dict[str, str],
+    ) -> str:
+        """Deterministic handlers used only when understanding is unreachable.
+
+        Keyword allowlists, AgentPlanner, and free-text create_run live here
+        as compatibility, not as the online router.
+        """
+        from hermes.agent.agent_planner import AgentPlanner
+        from hermes.agent.goal_router import GoalRouter
+        from hermes.agent.local_intent import (
+            guess_file_action,
+            guess_install_action,
+            guess_local_action,
+            summarize_local_result,
+        )
+        from hermes.agent.plan_models import PlanningRoute
+        from hermes.agent.server_tasks import should_defer_to_server
+        from hermes.agent.task_planner import has_actionable_sequence, plan_local_sequence
+        from hermes.client.session_store import append_conversation_turn
+        from hermes.context.conversational_context import ConversationalContext
+
+        max_steps = self._settings.client.max_agent_steps
         agent_decision = AgentPlanner(self._registry).evaluate(
             message, conv_ctx, resolved_references=resolved_refs
         )
 
         if agent_decision.route == PlanningRoute.CLARIFY and agent_decision.clarification:
-            text = agent_decision.clarification
-            if self.state.session_notice:
-                text = f"{self.state.session_notice}\n\n{text}"
-            append_conversation_turn("user", message)
-            append_conversation_turn("assistant", text)
-            conv_ctx.save()
-            await self._set_status(AgentPhase.UNDERSTANDING, "Netlestirmem gerekiyor.")
-            return text
+            if not self._context_can_ground(conv_ctx):
+                text = agent_decision.clarification
+                if self.state.session_notice:
+                    text = f"{self.state.session_notice}\n\n{text}"
+                append_conversation_turn("user", message)
+                append_conversation_turn("assistant", text)
+                conv_ctx.save()
+                await self._set_status(AgentPhase.UNDERSTANDING, "Netlestirmem gerekiyor.")
+                return text
 
         if agent_decision.route == PlanningRoute.LOCAL_SEQUENCE and agent_decision.local_sequence:
             from hermes.agent.status_messages import format_completed_status, format_understanding_status
@@ -718,63 +1132,63 @@ class AgentOrchestrator:
         composite_steps = plan_composite_file_sequence(message)
         from hermes.agent.implicit_file_content import requires_implicit_content_generation
 
-        if (
-            is_composite_file_mission(message)
-            and len(composite_steps) < 2
-            and requires_implicit_content_generation(message)
-        ):
-            from hermes.agent.goal_parser import parse_goal
-            from hermes.agent.status_messages import format_mission_planning_status
-
-            parsed = parse_goal(message, conv_ctx, resolved_references=resolved_refs)
-            working_context = {
-                "parsed_goal": parsed.to_dict(),
-                "resolved_references": resolved_refs,
-            }
-            mission = self._mission_store.create_mission(message, working_context=working_context)
-            mission_id = mission.mission_id
-            conv_ctx.active_mission_id = mission_id
-            conv_ctx.set_current_objective(message)
-            self._mission_store.snapshot_context(mission_id, conv_ctx.snapshot_for_mission())
-            conv_ctx.save()
-            await self._set_status(
-                AgentPhase.PLANNING,
-                format_mission_planning_status(),
-                {"mission_id": mission_id},
-            )
-            engine_result = await self._run_mission_engine(mission_id)
-            if engine_result.handled:
-                text = await self._apply_mission_engine_result(
-                    mission_id, engine_result, conv_ctx, message
-                )
-                if self.state.session_notice and self.state.session_notice not in text:
-                    text = f"{self.state.session_notice}\n\n{text}"
-                return text
-
         if is_composite_file_mission(message) and len(composite_steps) < 2:
+            if requires_implicit_content_generation(message):
+                from hermes.agent.goal_parser import parse_goal
+                from hermes.agent.status_messages import format_mission_planning_status
+
+                parsed = parse_goal(message, conv_ctx, resolved_references=resolved_refs)
+                working_context = {
+                    "parsed_goal": parsed.to_dict(),
+                    "resolved_references": resolved_refs,
+                }
+                mission = self._mission_store.create_mission(
+                    message, working_context=working_context
+                )
+                mission_id = mission.mission_id
+                conv_ctx.active_mission_id = mission_id
+                conv_ctx.set_current_objective(message)
+                self._mission_store.snapshot_context(
+                    mission_id, conv_ctx.snapshot_for_mission()
+                )
+                conv_ctx.save()
+                await self._set_status(
+                    AgentPhase.PLANNING,
+                    format_mission_planning_status(),
+                    {"mission_id": mission_id},
+                )
+                engine_result = await self._run_mission_engine(mission_id)
+                if engine_result.handled:
+                    text = await self._apply_mission_engine_result(
+                        mission_id, engine_result, conv_ctx, message
+                    )
+                    if self.state.session_notice and self.state.session_notice not in text:
+                        text = f"{self.state.session_notice}\n\n{text}"
+                    return text
             text = "Dosyaya yazilacak icerigi anlayamadim."
+            if self.state.session_notice:
+                text = f"{self.state.session_notice}\n\n{text}"
             append_conversation_turn("user", message)
             append_conversation_turn("assistant", text)
             conv_ctx.save()
             await self._set_status(AgentPhase.FAILED, text)
             return text
+
         if len(composite_steps) >= 2:
             return await self._execute_local_sequence(composite_steps, message, conv_ctx=conv_ctx)
 
         file_intent = guess_file_action(message, resolved_references=resolved_refs, conv_ctx=conv_ctx)
+        placeholder_write = False
         if file_intent:
-            if (
-                file_intent.request.name == "write_file"
-                and is_placeholder_write_content(
+            # A write whose content could not be read out of the sentence is
+            # not a failure, it is a sentence the understanding layer should
+            # look at; declining here lets it through.
+            placeholder_write = file_intent.request.name == "write_file" and (
+                is_placeholder_write_content(
                     str(file_intent.request.arguments.get("content") or "")
                 )
-            ):
-                text = "Dosyaya yazilacak icerigi anlayamadim."
-                append_conversation_turn("user", message)
-                append_conversation_turn("assistant", text)
-                conv_ctx.save()
-                await self._set_status(AgentPhase.FAILED, text)
-                return text
+            )
+        if file_intent and not placeholder_write:
             text = await self._execute_resolved_local_intent(
                 file_intent, message, conv_ctx, resolved_references=resolved_refs
             )

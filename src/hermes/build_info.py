@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-BUILD_LABEL = "phase10.2.3-file-collision-fix-v1"
+BUILD_LABEL = "phaseF-intent-routing-v2"
 
 
 def _git_revision() -> str:

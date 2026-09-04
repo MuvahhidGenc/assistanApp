@@ -179,11 +179,18 @@ def resolve_read_file_path(
             if len(matches) == 1:
                 return matches[0]
             if len(matches) > 1:
+                from hermes.context.file_decision import decide_file_candidates
+
+                decision = decide_file_candidates(
+                    matches, ctx, text=text, filename=explicit_name, action="read"
+                )
+                if decision.auto_selected and decision.chosen_paths:
+                    return decision.chosen_paths[0]
                 return None
 
         from hermes.context.reference_resolver import match_named_file
 
-        named = match_named_file(text, list(getattr(ctx, "recent_files", []) or []), allow_stem=True)
+        named = match_named_file(text, list(getattr(ctx, "recent_files", []) or []), allow_stem=True, ctx=ctx)
         explicit = named.resolved_references.get("target_file")
         if explicit:
             found = _existing(explicit)

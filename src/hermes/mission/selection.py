@@ -107,11 +107,12 @@ def is_fast_path_candidate(message: str) -> bool:
 
 
 def should_create_mission(message: str) -> bool:
-    """
-    Independent of should_defer_to_server().
+    """Fallback heuristic used when structured understanding is unavailable.
 
-    Complex, goal-oriented, multi-step or research-heavy tasks should enter
-    Mission Engine even when server deferral heuristics do not fire.
+    Production routing no longer requires a keyword match to enter a mission.
+    The Intent layer creates missions from capabilities. This function remains
+    so an offline client can still recognise known compound goals, and so
+    existing tests keep a stable contract.
     """
     text = (message or "").strip()
     if not text:

@@ -44,13 +44,18 @@ class PlanningContext:
     tools: list[dict[str, Any]]
     skills: list[dict[str, Any]]
     relevant_context: dict[str, Any] = field(default_factory=dict)
+    capabilities: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
+        skills = [
+            {key: value for key, value in skill.items() if key != "preferred_tools"}
+            for skill in self.skills
+        ]
         return {
             "user_goal": self.user_goal,
             "system_state": self.system_state,
-            "available_tools": self.tools,
-            "skills": self.skills,
+            "available_capabilities": self.capabilities,
+            "skills": skills,
             "relevant_context": self.relevant_context,
         }
 

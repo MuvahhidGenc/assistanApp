@@ -80,7 +80,7 @@ async def test_retry_success(mission_root, registry):
 
     target = Path.home() / "Desktop" / "test-retry"
 
-    async def execute_side_effect(tool_call, run_id="", skip_approval=False):
+    async def execute_side_effect(tool_call, run_id="", skip_approval=False, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             return ToolResultPayload(tool_call_id="1", success=False, error="timeout")
@@ -155,7 +155,7 @@ async def test_already_installed_idempotency(mission_root, registry):
         "hermes.security.policy_engine", fromlist=["PolicyDecision"]
     ).PolicyDecision.ALLOW
 
-    async def side_effect(tool_call, run_id="", skip_approval=False):
+    async def side_effect(tool_call, run_id="", skip_approval=False, **kwargs):
         if tool_call.name == "install_program":
             return ToolResultPayload(tool_call_id="1", success=False, error="already installed")
         if tool_call.name == "list_installed_programs":

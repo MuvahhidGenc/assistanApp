@@ -179,8 +179,9 @@ class Capabilities(BaseModel):
     features: dict[str, Any] = Field(default_factory=dict)
     models: list[str] = Field(default_factory=list)
     version: str = ""
-    runtime: str = ""
-    endpoints: str = ""
+    # The server describes these as objects; older builds sent plain strings.
+    runtime: Any = ""
+    endpoints: Any = ""
 
 
 class ModelInfo(BaseModel):
@@ -204,3 +205,9 @@ class ToolResultPayload(BaseModel):
     success: bool
     output: Any = None
     error: str | None = None
+    # Independent confirmation that the world actually changed, as opposed to
+    # the tool merely reporting that it did.
+    verified: bool = False
+    verification_status: str | None = None
+    verification_method: str | None = None
+    verification_details: dict[str, Any] | None = None

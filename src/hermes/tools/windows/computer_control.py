@@ -284,7 +284,8 @@ class MoveMouseTool(BaseTool):
 class ScrollTool(BaseTool):
     name = "scroll"
     description = "Sayfayi veya listeyi yukari/asagi kaydirir."
-    risk_level = RiskLevel.NORMAL_MODIFICATION
+    # Navigational only: changes nothing outside the focused window.
+    risk_level = RiskLevel.LOW_RISK
     category = "computer_control"
 
     async def execute(
@@ -316,7 +317,7 @@ class ScrollTool(BaseTool):
 class ClickTextTool(BaseTool):
     name = "click_text"
     description = "Ekranda gorunen metne OCR ile bulup tiklar (video basligi, menu vb.)."
-    risk_level = RiskLevel.NORMAL_MODIFICATION
+    risk_level = RiskLevel.LOW_RISK
     category = "computer_control"
 
     async def execute(
@@ -362,7 +363,7 @@ class ShowDesktopTool(BaseTool):
 class BrowserNavTool(BaseTool):
     name = "browser_nav"
     description = "Tarayicida geri/ileri git veya tam ekran yap."
-    risk_level = RiskLevel.NORMAL_MODIFICATION
+    risk_level = RiskLevel.LOW_RISK
     category = "computer_control"
 
     async def execute(self, action: str = "back", **kwargs: Any) -> ToolExecutionResult:

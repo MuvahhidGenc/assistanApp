@@ -80,6 +80,12 @@ def analyze_failure_for_replan(mission: Mission, failed_step: MissionStep) -> Re
     if replan_count >= MAX_REPLAN_ATTEMPTS:
         return ReplanDecision(reason="Replan limiti doldu")
 
+    from hermes.mission.execution_guard import ExecutionGuard
+
+    budget = ExecutionGuard(mission).check_budget()
+    if not budget.allowed:
+        return ReplanDecision(reason=budget.reason)
+
     completed = _completed_step_ids(mission)
     if not completed:
         return ReplanDecision(reason="Henuz basarili adim yok")

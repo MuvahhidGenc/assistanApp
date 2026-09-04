@@ -303,6 +303,9 @@ def build_tool_manifest(registry: ToolRegistry) -> list[dict[str, Any]]:
                 "risk_level": definition.risk_level.value,
                 "execution_target": definition.execution_target.value,
                 "input_schema": input_schema_for_tool(definition.name, tool),
+                "capabilities": list(definition.capabilities),
+                "prerequisites": list(definition.prerequisites),
+                "fallback_tools": list(definition.fallback_tools),
             }
         )
     return manifest

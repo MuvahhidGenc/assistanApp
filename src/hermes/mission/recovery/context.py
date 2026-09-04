@@ -40,6 +40,8 @@ class RecoveryContext:
     run_id: str = ""
     strategy_attempts: dict[str, int] = field(default_factory=dict)
     total_attempts: int = 0
+    # Lets strategies reason about capabilities instead of hardcoding tool names.
+    registry: Any = None
 
 
 @dataclass

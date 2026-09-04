@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from hermes.mission.models import MissionStep
 from hermes.server.models import ToolResultPayload
+
+if TYPE_CHECKING:
+    # Importing this at runtime pulls in hermes.mission.engine, which imports
+    # this package back — the cycle silently disabled executor verification.
+    from hermes.mission.models import MissionStep
 
 ObserveToolCallback = Callable[[str, dict[str, Any], str], Awaitable[ToolResultPayload | None]]
 
@@ -17,7 +21,7 @@ class VerifierContext:
     execution_success: bool
     execution_output: Any = None
     execution_error: str | None = None
-    step: MissionStep | None = None
+    step: "MissionStep | None" = None
     run_id: str = ""
     observe_tool: ObserveToolCallback | None = None
     timeout_seconds: float = 10.0

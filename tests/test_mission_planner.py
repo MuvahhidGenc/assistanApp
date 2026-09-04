@@ -8,12 +8,15 @@ import pytest
 
 from hermes.mission.context import build_planning_context, build_planning_prompt
 from hermes.mission.engine import MissionEngine
-from hermes.mission.models import Mission, MissionStatus, MissionStep, MissionStepStatus, StepAction
-from hermes.mission.planner import MissionPlanner, PlannerFailureError, PlannerTimeoutError, build_heuristic_plan
+from hermes.mission.models import MissionStep, MissionStepStatus, StepAction
+from hermes.mission.planner import (
+    MissionPlanner,
+    build_heuristic_plan,
+)
 from hermes.mission.store import MissionStore
 from hermes.mission.validator import extract_plan_json, validate_plan_steps
 from hermes.server.client import HermesServerError
-from hermes.server.models import ChatRequest, ToolResultPayload
+from hermes.server.models import ToolResultPayload
 from hermes.tools.registry import create_default_registry
 
 
@@ -38,27 +41,13 @@ def mission_root(tmp_path, monkeypatch):
 def _valid_ai_plan() -> str:
     return json.dumps(
         {
-            "steps": [
-                {
-                    "step_id": "inspect_system",
-                    "title": "Sistem bilgisini topla",
-                    "action": "tool",
-                    "tool_name": "get_system_info",
-                    "tool_arguments": {},
-                    "depends_on": [],
-                    "risk_level": "read_only",
-                    "expected_result": "OS bilgisi",
-                    "verification": {"required": True, "method": "output_present"},
-                },
-                {
-                    "step_id": "summarize",
-                    "title": "Sonucu ozetle",
-                    "action": "logical",
-                    "depends_on": ["inspect_system"],
-                    "expected_result": "Ozet",
-                    "verification": {"required": False},
-                },
-            ]
+            "goal": "Sistem durumunu incele",
+            "subgoals": ["Sistem bilgisini topla"],
+            "plan": [{"capability": "system.inspect", "inputs": {}}],
+            "required_capabilities": ["system.inspect"],
+            "mode": "task",
+            "confidence": 0.9,
+            "expected_outcome": "OS bilgisi",
         }
     )
 
@@ -78,8 +67,12 @@ async def test_simple_mission_ai_plan(registry, mission_root):
     planner = MissionPlanner(_mock_chat_client(_valid_ai_plan()), registry)
     result = await planner.create_plan(mission)
     assert result.success is True
-    assert result.source == "ai"
-    assert len(result.steps) == 2
+    assert result.source == "capability_resolver"
+    assert result.steps
+    assert result.steps[0].metadata.get("source") == "intent_router"
+    assert result.steps[0].metadata.get("capability") == "system.inspect"
+    provided = {item.name for item in registry.find_by_capability("system.inspect")}
+    assert result.steps[0].tool_name in provided
 
 
 @pytest.mark.asyncio
@@ -273,9 +266,12 @@ def test_planning_context_structure(registry):
     context = build_planning_context("Standart PC kurulumu yap", registry)
     prompt = build_planning_prompt(context)
     assert "Standart PC kurulumu yap" in prompt
-    assert "available_tools" in prompt
+    assert "available_capabilities" in prompt
+    assert "available_tools" not in prompt
+    assert "tool_name" not in prompt
     assert "standard_pc_setup" in prompt or "skill_id" in prompt
     assert len(context.tools) >= 40
+    assert "system.inspect" in context.capabilities
 
 
 def test_heuristic_plan_for_pc_setup(registry):

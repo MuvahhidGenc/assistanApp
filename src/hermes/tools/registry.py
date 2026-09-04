@@ -5,6 +5,9 @@ from typing import Any
 from hermes.config.settings import RiskLevel  # noqa: F401
 from hermes.tools.base import BaseTool, ToolDefinition, ToolExecutionResult  # noqa: F401
 
+def _risk_order(risk: RiskLevel | None) -> int:
+    return risk.severity if risk is not None else 99
+
 
 def _all_windows_tools() -> list[BaseTool]:
     from hermes.tools.windows.computer_control import (
@@ -143,6 +146,30 @@ class ToolRegistry:
 
     def categories(self) -> list[str]:
         return sorted({d.category for d in self.list_tools()})
+
+    def find_by_capability(self, capability: str) -> list[ToolDefinition]:
+        """Tools that can perform a capability, lowest risk first.
+
+        This is the name-independent lookup: a goal asks for what it needs to
+        happen, not for a tool it already knows about.
+        """
+        wanted = str(capability)
+        matches = [d for d in self.list_tools() if wanted in d.capabilities]
+        matches.sort(key=lambda d: _risk_order(d.risk_level))
+        return matches
+
+    def capabilities(self) -> list[str]:
+        found: set[str] = set()
+        for definition in self.list_tools():
+            found.update(definition.capabilities)
+        return sorted(found)
+
+    def capability_map(self) -> dict[str, tuple[str, ...]]:
+        return {d.name: d.capabilities for d in self.list_tools()}
+
+    def risk_map(self) -> dict[str, RiskLevel]:
+        """Declared risk per tool — the single source of truth for policy."""
+        return {d.name: d.risk_level for d in self.list_tools()}
 
     def to_manifest(self) -> list[dict[str, Any]]:
         from hermes.tools.manifest import build_tool_manifest

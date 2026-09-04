@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from hermes.agent.local_intent import guess_file_action
-from hermes.mission.write_content import plan_composite_file_sequence
 from hermes.mission.context import build_planning_context, build_planning_prompt
-from hermes.mission.models import MissionStep, StepAction
 from hermes.mission.planner import MissionPlanner
 from hermes.mission.store import MissionStore
 from hermes.mission.validator import validate_plan_steps
@@ -15,10 +14,10 @@ from hermes.mission.write_content import (
     extract_literal_write_content,
     normalize_plan_steps_write_content,
     normalize_write_file_arguments,
+    plan_composite_file_sequence,
     resolve_write_file_content,
 )
 from hermes.tools.registry import create_default_registry
-from unittest.mock import AsyncMock, MagicMock
 
 HERMES_TEST2_GOAL = (
     "Masaüstünde HermesTest2 klasörü oluştur. İçine test.txt dosyası oluştur "
@@ -112,29 +111,24 @@ async def test_planner_normalizes_bad_write_file_content(registry, tmp_path, mon
 
     ai_plan = json.dumps(
         {
-            "steps": [
+            "goal": "HermesTest2 klasoru ve test.txt olustur",
+            "plan": [
                 {
-                    "step_id": "create_folder",
-                    "title": "HermesTest2 klasoru",
-                    "action": "tool",
-                    "tool_name": "create_folder",
-                    "tool_arguments": {"path": "Desktop/HermesTest2"},
-            "depends_on": [],
-            "risk_level": "normal_modification",
-        },
-        {
-            "step_id": "write_txt",
-            "title": "test.txt icerigi",
-            "action": "tool",
-            "tool_name": "write_file",
-            "tool_arguments": {
-                "path": "Desktop/HermesTest2/test.txt",
-                "content": ". Başka hiçbir şey yazma.",
-            },
-            "depends_on": ["create_folder"],
-            "risk_level": "normal_modification",
+                    "capability": "filesystem.write",
+                    "inputs": {"path": "Desktop/HermesTest2"},
                 },
-            ]
+                {
+                    "capability": "filesystem.write",
+                    "inputs": {
+                        "path": "Desktop/HermesTest2/test.txt",
+                        "content": ". Başka hiçbir şey yazma.",
+                    },
+                },
+            ],
+            "required_capabilities": ["filesystem.write"],
+            "mode": "task",
+            "confidence": 0.95,
+            "expected_outcome": "test.txt 123456789 icerir",
         }
     )
     client = MagicMock()
@@ -144,7 +138,9 @@ async def test_planner_normalizes_bad_write_file_content(registry, tmp_path, mon
     planner = MissionPlanner(client, registry)
     result = await planner.create_plan(mission)
     assert result.success is True
+    assert result.source == "capability_resolver"
     write_step = next(step for step in result.steps if step.tool_name == "write_file")
+    assert write_step.metadata.get("source") == "intent_router"
     assert write_step.tool_arguments["content"] == "123456789"
     assert result.argument_diagnostics
     assert result.argument_diagnostics[0]["normalized"] is True
@@ -153,7 +149,6 @@ async def test_planner_normalizes_bad_write_file_content(registry, tmp_path, mon
 def test_guess_file_action_defers_to_composite_sequence():
     intent = guess_file_action(HERMES_TEST2_GOAL)
     assert intent is None
-    from hermes.mission.write_content import plan_composite_file_sequence
 
     steps = plan_composite_file_sequence(HERMES_TEST2_GOAL)
     assert len(steps) >= 1

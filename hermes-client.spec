@@ -10,6 +10,12 @@ icon_file = root / "assets" / "tray.ico"
 
 datas = [
     (str(root / "config" / "default.yaml"), "config"),
+    # Skills are looked up next to their loader at runtime; without this the
+    # frozen build finds an empty procedures directory and silently has none.
+    (
+        str(root / "src" / "hermes" / "skills" / "procedures"),
+        "hermes/skills/procedures",
+    ),
 ]
 if icon_file.exists():
     datas.append((str(icon_file), "assets"))

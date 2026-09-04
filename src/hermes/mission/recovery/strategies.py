@@ -7,6 +7,7 @@ from typing import Any
 from hermes.config.settings import RiskLevel
 from hermes.mission.recovery.classifier import ErrorCategory
 from hermes.mission.recovery.context import RecoveryAction, RecoveryContext, _git_target, _resolve_folder
+from hermes.tools.capabilities import fit_arguments
 
 
 class RecoveryStrategy(ABC):
@@ -291,6 +292,58 @@ class VerificationRetryStrategy(RecoveryStrategy):
         ]
 
 
+class CapabilityFallbackStrategy(RecoveryStrategy):
+    """Try a different mechanism for the same goal, not the same one again.
+
+    The alternatives come from each tool's declared `fallback_tools`, so adding
+    a new tool with a fallback needs no change here. Arguments are carried over
+    by schema intersection rather than per-pair mapping.
+    """
+
+    strategy_id = "capability_fallback"
+    applicable_tools = ()
+    applicable_errors = (
+        ErrorCategory.TOOL_FAILURE,
+        ErrorCategory.NOT_FOUND,
+        ErrorCategory.DEPENDENCY_MISSING,
+        ErrorCategory.VERIFICATION_FAILURE,
+        ErrorCategory.PERMISSION_DENIED,
+    )
+    max_attempts = 2
+    risk_level = RiskLevel.LOW_RISK
+
+    def build_actions(self, ctx: RecoveryContext) -> list[RecoveryAction]:
+        registry = ctx.registry
+        tool_name = ctx.step.tool_name or ""
+        if registry is None or not tool_name:
+            return []
+
+        failed = registry.get(tool_name)
+        if failed is None:
+            return []
+
+        actions: list[RecoveryAction] = []
+        for alternative in failed.get_definition().fallback_tools:
+            candidate = registry.get(alternative)
+            if candidate is None:
+                continue
+            adapted = fit_arguments(
+                dict(ctx.step.tool_arguments), candidate.get_parameters_schema()
+            )
+            if adapted is None:
+                continue
+            actions.append(
+                RecoveryAction(
+                    strategy_id=f"{self.strategy_id}:{alternative}",
+                    tool_name=alternative,
+                    tool_arguments=adapted,
+                    user_message=f"{tool_name} sonuc vermedi. {alternative} ile deniyorum.",
+                    risk_level=candidate.risk_level,
+                )
+            )
+        return actions
+
+
 def create_default_strategies() -> list[RecoveryStrategy]:
     return [
         InstallAlreadyInstalledStrategy(),
@@ -303,4 +356,6 @@ def create_default_strategies() -> list[RecoveryStrategy]:
         DnsRetryStrategy(),
         VerificationRetryStrategy(),
         RetrySameToolStrategy(),
+        # Last: prefer a targeted fix or a plain retry before switching mechanism.
+        CapabilityFallbackStrategy(),
     ]

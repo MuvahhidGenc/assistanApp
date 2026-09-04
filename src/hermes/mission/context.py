@@ -5,7 +5,10 @@ import platform
 from typing import Any
 
 from hermes.mission.schema import PlanningContext
-from hermes.mission.write_content import build_write_content_planning_hints, requires_tool_output_dependency
+from hermes.mission.write_content import (
+    build_write_content_planning_hints,
+    requires_tool_output_dependency,
+)
 from hermes.skills.loader import match_skills_for_goal
 from hermes.tools.manifest import input_schema_for_tool
 from hermes.tools.registry import ToolRegistry
@@ -92,6 +95,7 @@ def build_planning_context(
         tools=build_compact_tool_manifest(registry),
         skills=skills,
         relevant_context=extra,
+        capabilities=list(registry.capabilities()),
     )
 
 
@@ -124,26 +128,26 @@ def build_agent_context_for_planning(
 def build_planning_prompt(context: PlanningContext) -> str:
     payload = context.to_payload()
     return (
-        "Sen HERMES Windows istemcisinin mission planner'isin. "
-        "Sadece JSON plan uret; tool calistirma, komut yazma veya aciklama ekleme.\n\n"
+        "Sen HERMES Windows istemcisinin niyet planlayicisisin. "
+        "Kullanicinin amacini yetenek (capability) cinsinden analiz et. "
+        "Asla arac adi veya executable cagri yazma. "
+        "risk_hint yalnizca tahmindir; gercek riski sen belirleyemezsin.\n\n"
         "PLANNING CONTEXT:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
         "Kurallar:\n"
-        "- Yalnizca mevcut tool isimlerini kullan (action=tool icin).\n"
-        "- Mantiksal analiz adimlari icin action=logical kullan; tool_name bos birak.\n"
-        "- Her step benzersiz step_id icermeli.\n"
-        "- depends_on yalnizca onceki step_id'leri referans almali.\n"
-        "- tool_arguments JSON schema required alanlarina uymali.\n"
-        "- risk_level tool manifestindeki degerle uyumlu olmali.\n"
-        "- verification.required true ise verification.method belirt.\n"
-        "- write_file icin tool_arguments.content YALNIZCA dosyaya yazilacak ham metin olmali.\n"
-        "- Kullanicinin meta talimatlari (or. 'tam olarak', 'baska hicbir sey yazma') content'e ASLA yazilmaz.\n"
-        "- relevant_context.write_file_argument_hints.required_content varsa content birebir o deger olmali.\n"
-        "- relevant_context.resolved_references varsa target_file/target_folder degerlerini tekrar tahmin etme.\n"
-        "- relevant_context.agent_state.verified_file varsa son olusturulan dosya referanslarinda onu kullan.\n"
-        "- relevant_context.goal_analysis.desired_state hedef durumu temsil eder.\n\n"
+        "- Yalnizca available_capabilities icindeki yetenek adlarini kullan.\n"
+        "- Arac adi yazma; tool secimini yerel cozumleyici yapar.\n"
+        "- relevant_context.write_file_argument_hints.required_content varsa "
+        "plan adiminin inputs.content alani birebir o deger olmali.\n"
+        "- Kullanicinin meta talimatlari (or. 'tam olarak', 'baska hicbir sey yazma') "
+        "content'e ASLA yazilmaz.\n"
+        "- Gerekli degeri bilmiyorsan o adimi uydurma; needs_user_input=true yap.\n"
+        "- mode: task | conversation | question.\n"
+        "- relevant_context.resolved_references varsa hedefi tekrar tahmin etme.\n"
+        "- relevant_context.agent_state.verified_file varsa son dosya referansinda onu kullan.\n\n"
         "Cikti formati (yalnizca JSON, baska metin yok):\n"
-        '{"steps":[{"step_id":"...","title":"...","action":"tool|logical",'
-        '"tool_name":"...","tool_arguments":{},"depends_on":[],"risk_level":"...",'
-        '"expected_result":"...","verification":{"required":true,"method":"..."}}]}'
+        '{"goal":"...","subgoals":[],"plan":[{"capability":"...","inputs":{}}],'
+        '"required_capabilities":[],"constraints":[],"ambiguity":[],'
+        '"needs_user_input":false,"clarifying_question":"","risk_hint":"read_only",'
+        '"confidence":0.0,"expected_outcome":"...","mode":"task","reply":""}'
     )

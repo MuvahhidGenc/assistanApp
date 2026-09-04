@@ -229,6 +229,7 @@ class RecoveryEngine:
             run_id=run_id,
             strategy_attempts=dict(meta.get("strategy_attempts") or {}),
             total_attempts=int(meta.get("current_attempt", 0)),
+            registry=self.registry,
         )
 
         budget = self.config.total_recovery_budget - ctx.total_attempts

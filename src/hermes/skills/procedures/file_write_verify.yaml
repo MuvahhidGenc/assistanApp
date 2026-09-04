@@ -1,0 +1,23 @@
+id: file_write_verify
+title: Dosya olustur ve varligini dogrula
+description: >
+  Verilen yola verilen icerikle bir dosya yazar ve dosyanin gercekten
+  olustugunu bagimsiz olarak dogrular.
+intent_hints:
+  - kullanici bir metin dosyasi olusturulmasini istiyor
+  - bir icerigin diske kaydedilmesi gerekiyor
+required_capabilities:
+  - filesystem.write
+risk: low
+idempotency: overwrite
+produces: path
+steps:
+  - id: write
+    title: Dosyayi yaz
+    capability: filesystem.write
+    inputs:
+      path: "{{ inputs.path }}"
+      content: "{{ inputs.content }}"
+    output: path
+    success_criteria:
+      path_exists: "{{ inputs.path }}"

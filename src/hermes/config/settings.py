@@ -16,6 +16,18 @@ class RiskLevel(StrEnum):
     NORMAL_MODIFICATION = "normal_modification"
     HIGH_RISK = "high_risk"
 
+    @property
+    def severity(self) -> int:
+        return _RISK_SEVERITY[self]
+
+
+_RISK_SEVERITY: dict[RiskLevel, int] = {
+    RiskLevel.READ_ONLY: 0,
+    RiskLevel.LOW_RISK: 1,
+    RiskLevel.NORMAL_MODIFICATION: 2,
+    RiskLevel.HIGH_RISK: 3,
+}
+
 
 class ServerSettings(BaseModel):
     url: str = ""

@@ -119,9 +119,6 @@ NORMAL_MODIFICATION_TOOLS = frozenset(
         "git_clone",
         "launch_program",
         "keyboard_shortcut",
-        "scroll",
-        "click_text",
-        "browser_nav",
     }
 )
 
@@ -157,14 +154,46 @@ DESTRUCTIVE_TEXT_PATTERNS = tuple(
 class PolicyEngine:
     """Local policy gate between Hermes Server tool requests and Windows execution."""
 
-    def __init__(self, require_approval_for: list[RiskLevel] | None = None) -> None:
+    def __init__(
+        self,
+        require_approval_for: list[RiskLevel] | None = None,
+        *,
+        registry: Any | None = None,
+    ) -> None:
         self._require_approval_for = require_approval_for or [
             RiskLevel.NORMAL_MODIFICATION,
             RiskLevel.HIGH_RISK,
         ]
+        self._registry = registry
+        self._declared_risk: dict[str, RiskLevel] | None = None
+
+    def _declared_risk_map(self) -> dict[str, RiskLevel]:
+        """Risk as declared by the tool classes themselves.
+
+        The name lists below cannot see new or renamed tools, so a tool that is
+        registered but unlisted used to fall through to READ_ONLY and skip
+        approval. The declaration is authoritative; the lists remain as the
+        fallback for server-side tool names with no local class.
+        """
+        if self._declared_risk is None:
+            try:
+                registry = self._registry
+                if registry is None:
+                    from hermes.tools.registry import create_default_registry
+
+                    registry = create_default_registry()
+                self._declared_risk = {
+                    name.lower(): risk for name, risk in registry.risk_map().items()
+                }
+            except Exception:  # pragma: no cover - registry must never break policy
+                self._declared_risk = {}
+        return self._declared_risk
 
     def classify_tool(self, tool_name: str) -> RiskLevel:
         name = tool_name.lower()
+        declared = self._declared_risk_map().get(name)
+        if declared is not None:
+            return declared
         if name in READ_ONLY_TOOLS:
             return RiskLevel.READ_ONLY
         if name in LOW_RISK_TOOLS:
@@ -255,13 +284,17 @@ class PolicyEngine:
         if argument_result is not None:
             return argument_result
 
+        risk = self.classify_tool(tool_name)
         if server_risk_level:
+            # A caller-supplied level may raise the bar but never lower it:
+            # ToolCallRequest defaults to read_only, which would otherwise let
+            # any caller walk a high-risk tool past the approval gate.
             try:
-                risk = RiskLevel(server_risk_level)
+                claimed = RiskLevel(server_risk_level)
             except ValueError:
-                risk = self.classify_tool(tool_name)
-        else:
-            risk = self.classify_tool(tool_name)
+                claimed = risk
+            if claimed.severity > risk.severity:
+                risk = claimed
 
         if risk == RiskLevel.READ_ONLY:
             return PolicyResult(PolicyDecision.ALLOW, risk_level=risk)

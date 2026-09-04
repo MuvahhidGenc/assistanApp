@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from hermes.mission.compound_goal import build_compound_desktop_file_plan
 from hermes.mission.context import build_planning_context, build_planning_prompt
-from hermes.mission.models import Mission, MissionStatus, MissionStep, StepAction
+from hermes.mission.models import Mission, MissionStep, StepAction
 from hermes.mission.step_context import (
     LOGICAL_KIND_FORMAT_SYSTEM_INFO,
     SOURCE_FIELD_PREPARED_CONTENT,
@@ -14,8 +15,7 @@ from hermes.mission.step_context import (
     extract_folder_and_file_paths,
     is_placeholder_content,
 )
-from hermes.mission.compound_goal import build_compound_desktop_file_plan
-from hermes.mission.validator import extract_plan_json, validate_plan_steps
+from hermes.mission.validator import validate_plan_steps
 from hermes.mission.write_content import (
     normalize_plan_steps_write_content,
     planner_debug_enabled,
@@ -57,7 +57,7 @@ class PlannerResult:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _extract_chat_content(response: dict[str, Any]) -> str:
@@ -598,12 +598,26 @@ class MissionPlanner:
             )
 
     async def _plan_with_ai(self, mission: Mission) -> PlannerResult:
+        from hermes.intent.models import (
+            AgentIntent,
+            decide_confidence,
+            llm_named_a_tool,
+            repair_intent_json,
+        )
+        from hermes.intent.router import IntentRouter, RouteKind, build_input_pool
         from hermes.mission.context import build_agent_context_for_planning
+        from hermes.tools.capabilities import capability_risk_floor
 
         relevant: dict[str, object] = build_agent_context_for_planning(mission.working_context)
         resolved = mission.working_context.get("resolved_references")
         if isinstance(resolved, dict) and resolved:
             relevant["resolved_references"] = resolved
+        stored_intent = mission.working_context.get("agent_intent")
+        if isinstance(stored_intent, dict) and stored_intent:
+            relevant["previous_intent"] = {
+                key: stored_intent.get(key)
+                for key in ("goal", "required_capabilities", "expected_outcome")
+            }
         context = build_planning_context(
             mission.user_goal,
             self._registry,
@@ -624,11 +638,65 @@ class MissionPlanner:
         if not raw_text.strip():
             raise PlannerFailureError("Planner returned empty response")
 
-        raw_steps = extract_plan_json(raw_text)
-        if not raw_steps:
-            raise PlannerFailureError("Planner response did not contain valid plan JSON")
+        data = repair_intent_json(raw_text)
+        if data is None:
+            raise PlannerFailureError("Planner response did not contain valid intent JSON")
+        if llm_named_a_tool(data):
+            logger.warning(
+                "mission_planner_ignored_tool_names",
+                mission_id=mission.mission_id,
+            )
+            data = {
+                key: value
+                for key, value in data.items()
+                if key not in ("tool_name", "tool", "steps")
+            }
+            if not data.get("required_capabilities") and not data.get("plan"):
+                raise PlannerFailureError("planner named tools instead of capabilities")
 
-        validation = validate_plan_steps(raw_steps, self._registry)
+        intent = AgentIntent.from_dict(data)
+        router = IntentRouter(self._registry)
+        floors = [
+            floor
+            for floor in (
+                capability_risk_floor(self._registry, capability)
+                for capability in intent.required_capabilities
+            )
+            if floor is not None
+        ]
+        risk_floor = max(floors, key=lambda level: level.severity) if floors else None
+        confidence = decide_confidence(intent, risk_floor)
+        plan = router.route(intent, confidence=confidence)
+
+        if plan.kind is RouteKind.UNSUPPORTED:
+            return PlannerResult(
+                success=False,
+                steps=[],
+                source="capability_resolver",
+                error=plan.reason or "gereken yetenek yok",
+                raw_response=raw_text[:8000],
+            )
+        if plan.kind in (RouteKind.QUESTION, RouteKind.CONVERSATION):
+            return PlannerResult(
+                success=False,
+                steps=[],
+                source="capability_resolver",
+                error=plan.question or plan.reason or "niyet yurutulemez",
+                raw_response=raw_text[:8000],
+            )
+
+        steps = list(plan.steps)
+        if plan.kind is RouteKind.SKILL and not steps:
+            pool = build_input_pool(intent)
+            steps, _unfillable = router._build_capability_steps(intent, pool)  # noqa: SLF001
+
+        if not steps:
+            raise PlannerFailureError("capability resolver produced no executable steps")
+
+        validation = validate_plan_steps(
+            [step.to_dict() for step in steps],
+            self._registry,
+        )
         if not validation.ok:
             raise PlannerFailureError("; ".join(validation.errors[:5]))
 
@@ -656,7 +724,7 @@ class MissionPlanner:
         return PlannerResult(
             success=True,
             steps=steps,
-            source="ai",
+            source="capability_resolver",
             raw_response=raw_text[:8000],
             argument_diagnostics=arg_diagnostics,
         )

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from hermes.mission.execution_guard import ExecutionGuard
 from hermes.mission.models import Mission, MissionStatus, MissionStep, MissionStepStatus, StepAction
 from hermes.mission.planner import MissionPlanner, PlannerResult
 from hermes.mission.recovery import FailureKind, RecoveryConfig, RecoveryEngine
@@ -125,7 +126,12 @@ class MissionEngine:
         verification_timeout: float = 10.0,
         recovery_engine: RecoveryEngine | None = None,
         recovery_config: RecoveryConfig | None = None,
+        skill_executor: Any = None,
     ) -> None:
+        # Migration path for the legacy logical handlers below: a skill may
+        # claim a logical_kind and take over. None means nothing is claimed and
+        # the existing handlers run untouched.
+        self._skills = skill_executor
         self._store = store
         self._registry = registry
         self._executor = executor
@@ -293,6 +299,31 @@ class MissionEngine:
                 mission_id=mission_id,
                 summary="Plan dogrulamasi basarisiz: " + "; ".join(validation.errors[:3]),
             )
+
+        guard = ExecutionGuard(mission)
+        if force_replan:
+            plan_verdict = guard.check_plan(validation.steps)
+            if not plan_verdict.allowed:
+                mission.status = MissionStatus.FAILED
+                mission.errors.append(
+                    {
+                        "type": "execution_guard",
+                        "stop": str(plan_verdict.stop),
+                        "at": _utc_now(),
+                    }
+                )
+                self._store.save(mission)
+                # Say why the task failed, not just that the guard tripped.
+                cause = str(mission.working_context.get("replan_reason") or "").strip()
+                summary = plan_verdict.reason
+                if cause:
+                    summary = f"{summary} Gorev tamamlanamadi: {cause}"
+                return EngineResult(
+                    handled=True,
+                    mission_id=mission_id,
+                    summary=summary,
+                )
+        guard.record_plan(validation.steps)
 
         mission.steps = validation.steps
         mission.plan_validated = True
@@ -645,6 +676,50 @@ class MissionEngine:
 
         return await self._execute_verify_recover(mission, step, run_id, auditor=auditor)
 
+    async def _delegate_to_skill(
+        self,
+        mission: Mission,
+        step: MissionStep,
+        outcome: _StepRunOutcome,
+        kind: Any,
+    ) -> _StepRunOutcome | None:
+        """Run a skill instead of a legacy handler, when one claims this kind.
+
+        Returns None so the caller falls through to the existing handlers,
+        which is what happens whenever no skill has taken the kind over.
+        """
+        if self._skills is None or not kind:
+            return None
+        skill = self._skills.for_logical_kind(str(kind))
+        if skill is None:
+            return None
+
+        result = await self._skills.execute(
+            skill.skill_id,
+            inputs=dict(step.metadata.get("skill_inputs") or step.metadata),
+            mission=mission,
+            run_id=mission.mission_id,
+        )
+        outcome.user_messages.extend(result.user_messages)
+        step.completed_at = _utc_now()
+        if result.success:
+            record_step_tool_output(mission, step, result.outputs)
+            step.execution_status = "succeeded"
+            step.verification_status = VerificationStatus.VERIFIED.value
+            step.verification_method = f"skill:{skill.skill_id}"
+            step.status = MissionStepStatus.COMPLETED
+            step.result_summary = result.summary
+            outcome.summary_line = f"- {step.title}: {result.summary}"
+            outcome.step_done = True
+        else:
+            step.execution_status = "failed"
+            step.status = MissionStepStatus.FAILED
+            step.result_summary = result.summary
+            outcome.summary_line = f"- {step.title}: BASARISIZ ({result.summary})"
+            outcome.mission_failed = True
+        self._store.save(mission)
+        return outcome
+
     async def _run_logical_step(
         self, mission: Mission, step: MissionStep, outcome: _StepRunOutcome
     ) -> _StepRunOutcome:
@@ -657,6 +732,11 @@ class MissionEngine:
         )
 
         kind = step.metadata.get("logical_kind")
+
+        delegated = await self._delegate_to_skill(mission, step, outcome, kind)
+        if delegated is not None:
+            return delegated
+
         if kind == LOGICAL_KIND_READ_VERIFY_FILES:
             file_path = str(step.metadata.get("file_path") or "")
             expected = str(step.metadata.get("expected_content") or "")
@@ -2102,8 +2182,24 @@ class MissionEngine:
                 rid,
             )
 
+        guard = ExecutionGuard(mission)
+        verdict = guard.check_action(step.tool_name or "", step.tool_arguments)
+        if not verdict.allowed:
+            step.status = MissionStepStatus.FAILED
+            step.execution_status = "guard_stopped"
+            step.result_summary = verdict.reason
+            step.metadata["execution_guard_stop"] = str(verdict.stop)
+            outcome.continue_plan = False
+            outcome.mission_failed = True
+            outcome.summary_line = verdict.reason
+            outcome.user_messages.append(verdict.reason)
+            return outcome
+
         result = await execute_tool(step.tool_name or "", step.tool_arguments, run_id)
         execution_success = bool(getattr(result, "success", False))
+        guard.record_action(
+            step.tool_name or "", step.tool_arguments, made_progress=execution_success
+        )
         step.execution_status = "succeeded" if execution_success else "failed"
         if auditor is not None and step.tool_name:
             auditor.tool_executed(step.tool_name, success=execution_success, step_id=step.step_id)
@@ -2379,7 +2475,9 @@ class MissionEngine:
                 return ToolResultPayload(success=False, error=str(exc))
 
         tool_call = ToolCallRequest(name=local.name, arguments=local.arguments)
-        return await self._executor.execute_tool_call(tool_call, run_id=run_id)
+        # Missions verify through _observe_and_verify, which has the step and an
+        # observe callback; executor-level verification would duplicate it.
+        return await self._executor.execute_tool_call(tool_call, run_id=run_id, verify=False)
 
     async def _observe_via_tool(
         self, tool_name: str, arguments: dict[str, Any], run_id: str
@@ -2394,7 +2492,9 @@ class MissionEngine:
         if policy.decision == PolicyDecision.DENY:
             return None
         call = ToolCallRequest(name=tool_name, arguments=arguments)
-        return await self._executor.execute_tool_call(call, run_id=run_id, skip_approval=True)
+        return await self._executor.execute_tool_call(
+            call, run_id=run_id, skip_approval=True, verify=False
+        )
 
     async def _observe_and_verify(
         self,

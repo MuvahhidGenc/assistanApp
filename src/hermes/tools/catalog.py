@@ -33,6 +33,8 @@ class ToolCatalogEntry:
     prerequisites: tuple[str, ...] = ()
     opens_ui: bool = False
     category: str = "general"
+    capabilities: tuple[str, ...] = ()
+    fallback_tools: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +50,8 @@ class ToolCatalogEntry:
             "prerequisites": list(self.prerequisites),
             "opens_ui": self.opens_ui,
             "category": self.category,
+            "capabilities": list(self.capabilities),
+            "fallback_tools": list(self.fallback_tools),
         }
 
 
@@ -119,13 +123,25 @@ class ToolCatalog:
                 execution_target=definition.execution_target,
                 risk_level=definition.risk_level,
                 idempotency=_IDEMPOTENCY.get(name, IdempotencyKind.STATEFUL),
-                prerequisites=(),
+                prerequisites=definition.prerequisites,
                 opens_ui=name in _UI_TOOLS,
                 category=definition.category,
+                capabilities=definition.capabilities,
+                fallback_tools=definition.fallback_tools,
             )
 
     def get(self, name: str) -> ToolCatalogEntry | None:
         return self._entries.get(name)
+
+    def find_by_capability(self, capability: str) -> list[ToolCatalogEntry]:
+        wanted = str(capability)
+        return [entry for entry in self._entries.values() if wanted in entry.capabilities]
+
+    def capabilities(self) -> list[str]:
+        found: set[str] = set()
+        for entry in self._entries.values():
+            found.update(entry.capabilities)
+        return sorted(found)
 
     def list_entries(self) -> list[ToolCatalogEntry]:
         return list(self._entries.values())

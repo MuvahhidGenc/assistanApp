@@ -1,0 +1,41 @@
+id: browser_page_report
+title: Web sayfasini incele ve rapor olustur
+description: >
+  Bir sayfaya gider, ekrandaki icerigi okur ve okunan icerigi bir rapor
+  dosyasina yazar. Hicbir adim belirli bir arac adina bagli degildir;
+  gereken yetenekler calisma aninda uygun araclara cozulur.
+intent_hints:
+  - kullanici bir web sayfasindaki bilgiyi dosyaya kaydetmek istiyor
+  - bir sayfanin icerigi hakkinda rapor isteniyor
+required_capabilities:
+  - browser.navigate
+  - browser.read
+  - filesystem.write
+risk: medium
+idempotency: overwrite
+produces: report_path
+steps:
+  - id: open_page
+    title: Sayfayi ac
+    capability: browser.navigate
+    inputs:
+      url: "{{ inputs.url }}"
+
+  - id: read_page
+    title: Sayfa icerigini oku
+    capability: browser.read
+    output: page_text
+    output_from: text
+    success_criteria:
+      output_not_empty: true
+      min_length: 20
+
+  - id: write_report
+    title: Raporu kaydet
+    capability: filesystem.write
+    inputs:
+      path: "{{ inputs.path }}"
+      content: "{{ steps.read_page.output }}"
+    output: report_path
+    success_criteria:
+      path_exists: "{{ inputs.path }}"

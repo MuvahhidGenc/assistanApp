@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,7 @@ _ENTITY_TYPES = frozenset(
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _normalize_path(value: str | None) -> str | None:
@@ -97,6 +97,9 @@ class ConversationalContext:
     last_opened_file: str | None = None
     last_action_summary: str = ""
     last_mission_summary: str = ""
+    last_task_result: str = ""
+    last_intent: dict[str, Any] | None = None
+    last_route_kind: str = ""
     last_user_message: str = ""
     suspended_mission_ids: list[str] = field(default_factory=list)
     recent_disambiguation_options: list[dict[str, str]] = field(default_factory=list)
@@ -147,6 +150,9 @@ class ConversationalContext:
             "last_opened_file": self.last_opened_file,
             "last_action_summary": self.last_action_summary,
             "last_mission_summary": self.last_mission_summary,
+            "last_task_result": self.last_task_result,
+            "last_intent": dict(self.last_intent) if self.last_intent else None,
+            "last_route_kind": self.last_route_kind,
             "last_user_message": self.last_user_message,
             "suspended_mission_ids": self.suspended_mission_ids,
             "recent_disambiguation_options": self.recent_disambiguation_options,
@@ -195,6 +201,11 @@ class ConversationalContext:
             last_opened_file=data.get("last_opened_file"),
             last_action_summary=str(data.get("last_action_summary") or ""),
             last_mission_summary=str(data.get("last_mission_summary") or ""),
+            last_task_result=str(data.get("last_task_result") or ""),
+            last_intent=dict(data.get("last_intent") or {})
+            if isinstance(data.get("last_intent"), dict)
+            else None,
+            last_route_kind=str(data.get("last_route_kind") or ""),
             last_user_message=str(data.get("last_user_message") or ""),
             suspended_mission_ids=[
                 str(item) for item in (data.get("suspended_mission_ids") or []) if str(item).strip()
@@ -367,6 +378,21 @@ class ConversationalContext:
 
     def record_user_message(self, message: str) -> None:
         self.last_user_message = (message or "").strip()
+        self.touch()
+
+    def record_intent(
+        self,
+        intent: dict[str, Any] | None,
+        *,
+        route_kind: str = "",
+        result: str = "",
+    ) -> None:
+        """Remember the last understood goal so a follow-up can use it."""
+        self.last_intent = dict(intent) if intent else None
+        self.last_route_kind = (route_kind or "").strip()
+        text = (result or "").strip()
+        if text:
+            self.last_task_result = text[:2000]
         self.touch()
 
     def record_action_summary(self, summary: str) -> None:

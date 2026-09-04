@@ -222,7 +222,7 @@ async def test_engine_dynamic_system_info_write_flow(registry, mission_root, mon
     executor = MagicMock()
     executor._policy.evaluate.return_value.decision = PolicyDecision.ALLOW
 
-    async def fake_execute(call, run_id="", skip_approval=False):
+    async def fake_execute(call, run_id="", skip_approval=False, **kwargs):
         if call.name == "create_folder":
             folder.mkdir(parents=True, exist_ok=True)
             return ToolResultPayload(tool_call_id="1", success=True, output={"path": str(folder)})
@@ -430,7 +430,7 @@ async def test_engine_ai_plan_without_logical_kind_still_writes(registry, missio
     executor = MagicMock()
     executor._policy.evaluate.return_value.decision = PolicyDecision.ALLOW
 
-    async def fake_execute(call, run_id="", skip_approval=False):
+    async def fake_execute(call, run_id="", skip_approval=False, **kwargs):
         if call.name == "create_folder":
             folder.mkdir(parents=True, exist_ok=True)
             return ToolResultPayload(tool_call_id="1", success=True, output={"path": str(folder)})
