@@ -9,6 +9,7 @@ from typing import Any
 from hermes.agent.application_catalog import WEB_SHORTCUTS, normalize_user_text, resolve_web_url
 from hermes.intent.models import AgentIntent, IntentStep
 from hermes.screen.reference import extract_reference_features, is_screen_perception_task
+from hermes.screen.scroll import parse_scroll_action
 
 
 def infer_navigate_url(message: str) -> str | None:
@@ -55,6 +56,26 @@ def build_screen_perception_intent(message: str, context: Any = None) -> AgentIn
         references={"reference": text},
         expected_outcome="Ekrandaki hedefe tiklandi",
         reported_confidence=0.86,
+        mode="task",
+    )
+
+
+def build_scroll_intent(message: str, context: Any = None) -> AgentIntent | None:
+    """Deterministic scroll plan with direction/amount from the utterance."""
+    action = parse_scroll_action(message, context)
+    if action is None:
+        return None
+    args = action.to_tool_arguments()
+    return AgentIntent(
+        goal=(message or "").strip(),
+        plan=(
+            IntentStep(capability="screen.scroll", inputs=args),
+            IntentStep(capability="screen.observe", inputs={}),
+        ),
+        required_capabilities=("screen.scroll", "screen.observe"),
+        references=args,
+        expected_outcome="Sayfa kaydirildi",
+        reported_confidence=0.9,
         mode="task",
     )
 

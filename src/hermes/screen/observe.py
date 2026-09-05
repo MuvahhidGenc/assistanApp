@@ -146,6 +146,9 @@ def build_screen_state(
             )
         )
 
+    from hermes.screen.store import last_screen_state
+
+    previous = last_screen_state()
     state = ScreenState(
         screenshot=screenshot,
         window=window,
@@ -153,6 +156,7 @@ def build_screen_state(
         line_groups=line_groups,
         entities=entities,
         text=str(data.get("text") or ""),
+        previous_state_id=previous.state_id if previous is not None else "",
     )
     classify_screen_entities(state)
     if remember:

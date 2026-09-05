@@ -97,6 +97,18 @@ def build_input_pool(intent: AgentIntent, context: Any = None) -> dict[str, Any]
         if value:
             pool[str(key)] = value
 
+    # Fill scroll magnitude from the utterance when the plan omitted amount.
+    wants_scroll = any(
+        step.capability == "screen.scroll" for step in intent.plan
+    ) or "screen.scroll" in intent.required_capabilities
+    if wants_scroll and ("amount" not in pool or "direction" not in pool):
+        from hermes.screen.scroll import parse_scroll_action
+
+        action = parse_scroll_action(str(intent.goal or ""), context)
+        if action is not None:
+            for key, value in action.to_tool_arguments().items():
+                pool.setdefault(key, value)
+
     return pool
 
 

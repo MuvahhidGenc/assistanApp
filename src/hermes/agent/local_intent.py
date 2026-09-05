@@ -395,23 +395,18 @@ def _match_interactive_control(text: str, lower: str) -> LocalIntent | None:
 
     if re.search(
         r"asagi|aşağı|asag[ıi]\s*in|scroll\s*down|page\s*down|kaydir|kaydır|"
-        r"sayfayi\s*asagi|sayfayı\s*aşağı|biraz\s*asagi|biraz\s*aşağı",
-        lower,
-    ) and re.search(r"in|kaydir|kaydır|scroll|sayfa|asagi|aşağı", lower):
-        return LocalIntent(
-            LocalToolRequest("scroll", {"direction": "down", "amount": 4}),
-            "Asagi kaydiriliyor.",
-        )
-
-    if re.search(
-        r"yukari|yukarı|scroll\s*up|page\s*up|yukari\s*in|yukarı\s*in|"
-        r"sayfayi\s*yukari|sayfayı\s*yukarı|biraz\s*yukari|biraz\s*yukarı",
+        r"sayfayi\s*asagi|sayfayı\s*aşağı|biraz\s*asagi|biraz\s*aşağı|"
+        r"yukari|yukarı|scroll\s*up|page\s*up",
         lower,
     ):
-        return LocalIntent(
-            LocalToolRequest("scroll", {"direction": "up", "amount": 4}),
-            "Yukari kaydiriliyor.",
-        )
+        from hermes.screen.scroll import parse_scroll_action
+
+        action = parse_scroll_action(text)
+        if action is not None:
+            return LocalIntent(
+                LocalToolRequest("scroll", action.to_tool_arguments()),
+                "Asagi kaydiriliyor." if action.direction == "down" else "Yukari kaydiriliyor.",
+            )
 
     if re.search(r"\b(tikla|tıkla|basla|başla|sec|seç)\b", lower) or re.search(
         r"videosunu\s+(ac|aç|izle|oynat)|video(?:yu|su)\s+(ac|aç|izle|oynat)", lower

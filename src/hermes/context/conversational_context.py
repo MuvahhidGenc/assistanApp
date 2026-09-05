@@ -180,6 +180,8 @@ class ConversationalContext:
     last_screen_state: dict[str, Any] | None = None
     last_screen_entity_id: str | None = None
     last_screen_result_set: dict[str, Any] | None = None
+    last_scroll_amount: int | None = None
+    last_scroll_direction: str | None = None
     active_focus: ActiveFocus | None = None
     container_focus: ActiveFocus | None = None
     invalidated_targets: list[str] = field(default_factory=list)
@@ -243,6 +245,8 @@ class ConversationalContext:
             "last_screen_result_set": dict(self.last_screen_result_set)
             if self.last_screen_result_set
             else None,
+            "last_scroll_amount": self.last_scroll_amount,
+            "last_scroll_direction": self.last_scroll_direction,
             "active_focus": self.active_focus.to_dict() if self.active_focus else None,
             "container_focus": self.container_focus.to_dict() if self.container_focus else None,
             "invalidated_targets": list(self.invalidated_targets),
@@ -326,6 +330,10 @@ class ConversationalContext:
             last_screen_result_set=dict(data.get("last_screen_result_set") or {})
             if isinstance(data.get("last_screen_result_set"), dict)
             else None,
+            last_scroll_amount=int(data["last_scroll_amount"])
+            if str(data.get("last_scroll_amount") or "").isdigit()
+            else data.get("last_scroll_amount"),
+            last_scroll_direction=data.get("last_scroll_direction"),
             active_focus=ActiveFocus.from_dict(data["active_focus"])
             if isinstance(data.get("active_focus"), dict)
             else None,
@@ -975,6 +983,24 @@ class ConversationalContext:
                     label=str(output.get("text") or entity_id)[:80],
                 )
 
+        elif tool_name == "scroll" and isinstance(output, dict):
+            try:
+                amount = int(output.get("amount"))
+            except (TypeError, ValueError):
+                amount = None
+            if amount is not None:
+                self.last_scroll_amount = amount
+            direction = str(output.get("direction") or "").strip()
+            if direction:
+                self.last_scroll_direction = direction
+            state_payload = output.get("screen_state") or output.get("verified_output")
+            if isinstance(state_payload, dict) and (
+                state_payload.get("entities") or state_payload.get("state_id")
+            ):
+                self.last_screen_state = dict(state_payload)
+            # New viewport invalidates the previous numbered list.
+            self.last_screen_result_set = None
+
         elif tool_name in ("click", "click_text") and isinstance(output, dict):
             entity_id = str(output.get("entity_id") or "").strip()
             if entity_id:
@@ -1036,6 +1062,13 @@ class ConversationalContext:
             entity_id = str(wc.get("last_screen_entity_id") or "").strip()
             if entity_id:
                 self.last_screen_entity_id = entity_id
+            if wc.get("last_scroll_amount") is not None:
+                try:
+                    self.last_scroll_amount = int(wc.get("last_scroll_amount"))
+                except (TypeError, ValueError):
+                    pass
+            if wc.get("last_scroll_direction"):
+                self.last_scroll_direction = str(wc.get("last_scroll_direction"))
         for step in getattr(mission, "steps", []) or []:
             if step.status != MissionStepStatus.COMPLETED:
                 continue

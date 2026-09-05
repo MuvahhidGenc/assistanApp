@@ -2411,6 +2411,8 @@ class MissionEngine:
             self._store.save(mission)
             if auditor is not None:
                 auditor.step_completed(step.step_id, summary=step.result_summary or "")
+            if step.tool_name == "scroll":
+                self._remember_after_scroll(mission, step)
             outcome.summary_line = f"- {step.title}: {step.result_summary}"
             outcome.step_done = True
             return outcome
@@ -2623,11 +2625,32 @@ class MissionEngine:
             return
         state = output.get("screen_state")
         if not isinstance(state, dict):
-            return
+            if output.get("entities") or output.get("state_id"):
+                state = output
+            else:
+                return
+        previous = mission.working_context.get("last_screen_state")
+        if isinstance(previous, dict) and previous.get("state_id"):
+            state = dict(state)
+            state.setdefault("previous_state_id", str(previous.get("state_id") or ""))
         mission.working_context["last_screen_state"] = state
         entity_id = str(output.get("entity_id") or "").strip()
         if entity_id:
             mission.working_context["last_screen_entity_id"] = entity_id
+
+    def _remember_after_scroll(self, mission: Mission, step: MissionStep) -> None:
+        details = step.verification_details if isinstance(step.verification_details, dict) else {}
+        payload = details.get("verified_output")
+        if not isinstance(payload, dict):
+            return
+        self._remember_screen_output(mission, payload)
+        mission.working_context.pop("last_screen_result_set", None)
+        mission.working_context.pop("pending_screen_resolve", None)
+        args = step.tool_arguments if isinstance(step.tool_arguments, dict) else {}
+        amount = args.get("amount")
+        if amount is not None:
+            mission.working_context["last_scroll_amount"] = amount
+            mission.working_context["last_scroll_direction"] = args.get("direction")
 
     async def _maybe_continue_screen_resolve(
         self,

@@ -27,11 +27,14 @@ from hermes.screen.reference import (
     SpatialSlot,
     extract_reference_features,
     requests_screen_rescan,
+    stem_token,
+    tokens_match,
 )
 
 # Weights live next to file evidence but are screen-specific sources.
 POSITION_WEIGHT = 85
 TEXT_WEIGHT = 90
+TEXT_PHRASE_WEIGHT = 120
 VISIBILITY_WEIGHT = 40
 TYPE_WEIGHT = 50
 SESSION_WEIGHT = 70
@@ -101,6 +104,9 @@ def bind_presented_screen_choice(
     if not order:
         return None
     features = extract_reference_features(reference)
+    # Quantity phrases ("3 videoyu ac") are not list-index picks.
+    if features.quantity is not None and features.ordinal is None:
+        return None
     index: int | None = None
     if features.ordinal is not None:
         index = features.ordinal
@@ -117,14 +123,35 @@ def bind_presented_screen_choice(
     return None
 
 
+def _entity_tokens(text: str) -> tuple[str, ...]:
+    features = extract_reference_features(text)
+    return features.text_tokens
+
+
+def _phrase_coverage(
+    entity_text: str,
+    user_tokens: tuple[str, ...],
+) -> tuple[float, float]:
+    """Return (entity_coverage, user_coverage) using stemmed token equality."""
+    entity_tokens = _entity_tokens(entity_text)
+    if not entity_tokens or not user_tokens:
+        return 0.0, 0.0
+    entity_hits = sum(
+        1
+        for entity_token in entity_tokens
+        if any(tokens_match(entity_token, user_token) for user_token in user_tokens)
+    )
+    user_hits = sum(
+        1
+        for user_token in user_tokens
+        if any(tokens_match(user_token, entity_token) for entity_token in entity_tokens)
+    )
+    return entity_hits / len(entity_tokens), user_hits / len(user_tokens)
+
+
 def _token_overlap(text: str, tokens: tuple[str, ...]) -> float:
-    if not tokens:
-        return 0.0
-    haystack = (text or "").casefold()
-    if not haystack:
-        return 0.0
-    hits = sum(1 for token in tokens if token in haystack)
-    return hits / len(tokens)
+    entity_cov, user_cov = _phrase_coverage(text, tokens)
+    return max(entity_cov, user_cov * 0.85)
 
 
 def _reading_order(entities: list[ScreenEntity]) -> list[ScreenEntity]:
@@ -178,13 +205,24 @@ def attach_screen_evidence(
     candidate.add("visibility", VISIBILITY_WEIGHT, detail=entity.source)
 
     if features.text_tokens:
-        overlap = _token_overlap(entity.text, features.text_tokens)
-        if overlap >= 1.0:
+        entity_cov, user_cov = _phrase_coverage(entity.text, features.text_tokens)
+        if entity_cov >= 0.85 and entity_cov * len(_entity_tokens(entity.text)) >= 1.7:
+            candidate.add("text_similarity", TEXT_PHRASE_WEIGHT, detail="phrase_match")
+        elif entity_cov >= 1.0 or (entity_cov >= 0.66 and user_cov >= 0.5):
             candidate.add("text_similarity", TEXT_WEIGHT, detail="full")
-        elif overlap >= 0.5:
-            candidate.add("text_similarity", int(TEXT_WEIGHT * 0.8), detail=f"overlap={overlap:.2f}")
-        elif overlap > 0:
-            candidate.add("text_similarity", int(TEXT_WEIGHT * 0.55), detail=f"overlap={overlap:.2f}")
+        elif entity_cov >= 0.5 or user_cov >= 0.5:
+            score = int(TEXT_WEIGHT * max(entity_cov, user_cov * 0.85))
+            candidate.add(
+                "text_similarity",
+                max(score, int(TEXT_WEIGHT * 0.55)),
+                detail=f"overlap={max(entity_cov, user_cov):.2f}",
+            )
+        elif entity_cov > 0 or user_cov > 0:
+            candidate.add(
+                "text_similarity",
+                int(TEXT_WEIGHT * 0.45),
+                detail=f"overlap={max(entity_cov, user_cov):.2f}",
+            )
 
     if features.type_hints:
         if entity.type in features.type_hints or entity.role in features.type_hints:
@@ -214,6 +252,11 @@ def _session_evidence_allowed(features: ReferenceFeatures) -> bool:
     if requests_screen_rescan(features.raw):
         return False
     if features.spatial is not None or features.ordinal is not None:
+        return False
+    if features.quantity is not None:
+        return False
+    # Named targets override the previous session lock.
+    if len(features.text_tokens) >= 2:
         return False
     return True
 
@@ -273,17 +316,6 @@ def resolve_screen_reference(
             candidates=tuple(_result_set_order(active_result)) or (bound_id,),
         )
 
-    pool = entities_for_hints(state, features.type_hints)
-    if features.type_hints == frozenset({"window"}):
-        pool = [item for item in state.entities if item.type == "window"] or pool
-
-    ranks: dict[str, int] = {}
-    if features.spatial is not None:
-        ranks = _spatial_ranks(pool, features.spatial, state)
-    elif features.ordinal is not None:
-        ordered = _reading_order(pool)
-        ranks = {item.id: abs(index - features.ordinal) for index, item in enumerate(ordered)}
-
     session_id = session_entity_id
     if session_id is None and context is not None:
         focus = getattr(context, "active_focus", None)
@@ -291,6 +323,36 @@ def resolve_screen_reference(
             session_id = getattr(focus, "identifier", None)
         else:
             session_id = getattr(context, "last_screen_entity_id", None)
+
+    # Pure deixis ("onu ac") → last bound entity, no OCR re-ranking.
+    if (
+        session_id
+        and features.deictic
+        and not features.text_tokens
+        and features.ordinal is None
+        and features.spatial is None
+        and features.quantity is None
+        and not requests_screen_rescan(features.raw)
+    ):
+        if state.entity(str(session_id)) is not None or active_result:
+            return EntityDecision(
+                chosen=(str(session_id),),
+                confidence=Confidence.HIGH,
+                score=SESSION_WEIGHT + POSITION_WEIGHT,
+                reason="session_deixis",
+                candidates=(str(session_id),),
+            )
+
+    pool = entities_for_hints(state, features.type_hints)
+    if features.type_hints == frozenset({"window"}):
+        pool = [item for item in state.entities if item.type == "window"] or pool
+
+    ranks: dict[str, int] = {}
+    if features.spatial is not None:
+        ranks = _spatial_ranks(pool, features.spatial, state)
+    elif features.ordinal is not None and features.quantity is None:
+        ordered = _reading_order(pool)
+        ranks = {item.id: abs(index - features.ordinal) for index, item in enumerate(ordered)}
 
     candidates = [
         attach_screen_evidence(
@@ -302,4 +364,24 @@ def resolve_screen_reference(
         )
         for entity in pool
     ]
+
+    # Strong unique phrase match skips the crowded OCR clarification path.
+    phrase_winners = [
+        item
+        for item in candidates
+        if any(
+            evidence.source == "text_similarity" and evidence.detail == "phrase_match"
+            for evidence in item.evidence
+        )
+    ]
+    if len(phrase_winners) == 1:
+        winner = phrase_winners[0]
+        return EntityDecision(
+            chosen=(winner.identifier,),
+            confidence=Confidence.HIGH,
+            score=winner.score,
+            reason="phrase_match",
+            candidates=tuple(item.identifier for item in candidates),
+        )
+
     return score_candidates(candidates, text=reference, label="oge")

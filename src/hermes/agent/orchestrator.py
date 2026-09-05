@@ -658,12 +658,18 @@ class AgentOrchestrator:
 
         from hermes.context.entity_decision import Confidence
         from hermes.intent.turn_relation import has_negative_polarity
-        from hermes.screen.plan import build_catalog_search_intent, build_screen_perception_intent
+        from hermes.screen.plan import (
+            build_catalog_search_intent,
+            build_screen_perception_intent,
+            build_scroll_intent,
+        )
 
         if has_negative_polarity(message):
             screen_intent = None
         else:
-            screen_intent = build_screen_perception_intent(message, conv_ctx)
+            screen_intent = build_scroll_intent(message, conv_ctx)
+            if screen_intent is None:
+                screen_intent = build_screen_perception_intent(message, conv_ctx)
             if screen_intent is None:
                 screen_intent = build_catalog_search_intent(message, conv_ctx)
         if screen_intent is not None:

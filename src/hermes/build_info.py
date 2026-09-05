@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-BUILD_LABEL = "screen-bind-verify-v1"
+BUILD_LABEL = "screen-exact-scroll-v1"
 
 
 def _git_revision() -> str:

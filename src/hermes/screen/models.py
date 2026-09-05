@@ -97,6 +97,7 @@ class ScreenState:
     line_groups: list[dict[str, Any]] = field(default_factory=list)
     entities: list[ScreenEntity] = field(default_factory=list)
     text: str = ""
+    previous_state_id: str = ""
 
     @property
     def width(self) -> int:
@@ -131,6 +132,7 @@ class ScreenState:
             "line_groups": list(self.line_groups),
             "entities": [item.to_dict() for item in self.entities],
             "text": self.text,
+            "previous_state_id": self.previous_state_id,
         }
 
     @classmethod
@@ -155,4 +157,5 @@ class ScreenState:
             ],
             entities=entities,
             text=str(data.get("text") or ""),
+            previous_state_id=str(data.get("previous_state_id") or ""),
         )

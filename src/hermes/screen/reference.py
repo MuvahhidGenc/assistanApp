@@ -28,6 +28,7 @@ class ReferenceFeatures:
     raw: str
     spatial: SpatialSlot | None = None
     ordinal: int | None = None
+    quantity: int | None = None
     text_tokens: tuple[str, ...] = ()
     type_hints: frozenset[str] = frozenset()
     deictic: bool = False
@@ -108,8 +109,100 @@ _FUNCTION_WORDS = frozenset(
         "ust", "üst", "ustteki", "üstteki", "top", "alt", "alttaki", "bottom",
         "asagidaki", "aşağıdaki", "yukaridaki", "yukarıdaki",
         "kirmizi", "kırmızı", "red", "mavi", "blue",
+        "bunu", "şunu", "sunu", "onu", "şu", "bu", "o",
+        "oku", "ekrani", "ekranı", "ekran", "ve", "sonra",
     }
 )
+
+# Agglutinative endings stripped for match stems (morphology, not domain terms).
+_STEM_SUFFIXES = (
+    "siniz", "sunuz", "sınız", "sünüz",
+    "sini", "sunu", "sını", "sünü",
+    "inin", "unun", "ının", "ünün",
+    "ini", "unu", "ını", "ünü",
+    "nin", "nun", "nın", "nün",
+    "leri", "ları", "lar", "ler",
+    "den", "dan", "ten", "tan",
+    "nde", "nda", "nte", "nta",
+    "yi", "yu", "yı", "yü",
+    "ni", "nu", "nı", "nü",
+    "si", "su", "sı", "sü",
+    "in", "un", "ın", "ün",
+)
+
+
+def stem_token(token: str) -> str:
+    """Strip common Turkish inflectional endings for fuzzy equality."""
+    word = (token or "").casefold().strip()
+    if len(word) < 4:
+        return word
+    changed = True
+    while changed and len(word) >= 4:
+        changed = False
+        for suffix in _STEM_SUFFIXES:
+            if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+                word = word[: -len(suffix)]
+                changed = True
+                break
+    return word
+
+
+def tokens_match(left: str, right: str) -> bool:
+    a = stem_token(left)
+    b = stem_token(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(a) >= 4 and len(b) >= 4 and (a.startswith(b) or b.startswith(a)):
+        return True
+    return False
+
+
+def _parse_number_role(lower: str) -> tuple[int | None, int | None]:
+    """Distinguish selection ordinals from quantity phrases.
+
+    Ordinal: '3.', \"3'ü\", 'üçüncü', bare digit as a list pick.
+    Quantity: '3 video', '3 videoyu aç' — a count before a noun, not #3.
+    """
+    ordinal = None
+    for pattern, index in _ORDINAL:
+        if pattern.search(lower):
+            ordinal = index
+            break
+
+    quantity = None
+    # Explicit ordinal morphology on a digit: 3. / 3'ü / 3.)
+    explicit = re.search(
+        r"\b(\d{1,2})\s*(?:\.\)|\.(?:\s|$)|['’][iıuü]|inci|uncu|ıncı|üncü)",
+        lower,
+    )
+    if explicit and ordinal is None:
+        value = int(explicit.group(1))
+        if 1 <= value <= 20:
+            ordinal = value - 1
+
+    quant = re.search(
+        r"\b(\d{1,2})\s+(?:tane\s+)?([\wçğıöşüÇĞİÖŞÜ]{3,})",
+        lower,
+    )
+    if quant and ordinal is None:
+        value = int(quant.group(1))
+        follower = quant.group(2)
+        # Digit + noun without ordinal morphology is a count, not a list index.
+        if not re.match(r"^\d+$", follower):
+            if 1 <= value <= 20:
+                quantity = value
+
+    if ordinal is None and quantity is None:
+        # Bare digit only when it is the selection signal (short / trailing).
+        bare = re.search(r"(?:^|\s)(\d{1,2})(?:\s*$|\s+(?:a[cç]|tikla|tıkla|sec|seç|onu)\b)", lower)
+        if bare:
+            value = int(bare.group(1))
+            if 1 <= value <= 20:
+                ordinal = value - 1
+
+    return ordinal, quantity
 
 
 def extract_reference_features(text: str) -> ReferenceFeatures:
@@ -127,17 +220,7 @@ def extract_reference_features(text: str) -> ReferenceFeatures:
             spatial = slot
             break
 
-    ordinal = None
-    for pattern, index in _ORDINAL:
-        if pattern.search(lower):
-            ordinal = index
-            break
-    if ordinal is None:
-        digit = re.search(r"\b(\d{1,2})\s*\.?(?:\b|$)", lower)
-        if digit:
-            value = int(digit.group(1))
-            if 1 <= value <= 20:
-                ordinal = value - 1
+    ordinal, quantity = _parse_number_role(lower)
 
     type_hints: set[str] = set()
     for hint, forms in _TYPE_HINTS.items():
@@ -147,13 +230,14 @@ def extract_reference_features(text: str) -> ReferenceFeatures:
     tokens = [
         word
         for word in re.findall(r"[\wçğıöşüÇĞİÖŞÜ]+", lower)
-        if word not in _FUNCTION_WORDS and len(word) > 1
+        if word not in _FUNCTION_WORDS and len(word) > 1 and not word.isdigit()
     ]
 
     return ReferenceFeatures(
         raw=raw,
         spatial=spatial,
         ordinal=ordinal,
+        quantity=quantity,
         text_tokens=tuple(tokens),
         type_hints=frozenset(type_hints),
         deictic=bool(_DEICTIC.search(lower)),
