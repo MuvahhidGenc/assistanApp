@@ -20,6 +20,7 @@ class EntityType(StrEnum):
     URL = "url"
     BROWSER_PAGE = "browser_page"
     WINDOW = "window"
+    SCREEN = "screen_entity"
     DOCUMENT = "document"
     TASK = "task"
     OTHER = "other"
@@ -54,6 +55,7 @@ DEFAULT_THRESHOLDS = DecisionThresholds()
 
 # Evidence weights. Ordered strongest-first; ties resolve by recency index.
 EVIDENCE_WEIGHTS: dict[str, int] = {
+    "active_focus": 110,
     "last_created_file": 100,
     "last_verified_file": 95,
     "last_modified_file": 90,
@@ -372,6 +374,13 @@ def attach_context_evidence(
 ) -> EntityCandidate:
     """Attach conversational-context evidence to a file candidate."""
     path = candidate.identifier
+    invalidated = getattr(ctx, "is_invalidated", None)
+    if callable(invalidated) and invalidated(path):
+        return candidate
+
+    focus = getattr(ctx, "active_focus", None)
+    if focus is not None and identifiers_equal(path, getattr(focus, "identifier", None)):
+        candidate.add("active_focus", EVIDENCE_WEIGHTS["active_focus"])
 
     for source in ("last_created_file", "last_verified_file", "last_modified_file", "active_file", "last_opened_file"):
         if identifiers_equal(path, getattr(ctx, source, None)):

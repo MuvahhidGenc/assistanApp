@@ -72,6 +72,7 @@ class PCManager:
         skip_approval: bool = False,
         *,
         user_message: str = "",
+        verify: bool = True,
     ) -> ToolResultPayload:
         tool_name, arguments = parse_pc_command(command)
         tool = self.registry.get(tool_name)
@@ -101,6 +102,7 @@ class PCManager:
                 run_id=run_id,
                 skip_approval=skip_approval,
                 user_message=user_message,
+                verify=verify,
             )
         except ToolApprovalRequiredError:
             raise

@@ -178,7 +178,8 @@ def parse_goal(
     lower = text.casefold()
     refs = dict(resolved_references or {})
     if ctx is not None:
-        refs.update(ctx.resolved_references())
+        for key, value in ctx.resolved_references(text).items():
+            refs.setdefault(key, value)
 
     parts = [part.strip(" .;") for part in _STEP_SPLIT.split(text) if part.strip(" .;")]
     parsed.is_multi_step = len(parts) > 1

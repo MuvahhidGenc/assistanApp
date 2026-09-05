@@ -20,6 +20,7 @@ _ENTITY_TYPES = frozenset(
         "browser_window",
         "text_content",
         "screen_text",
+        "screen_entity",
         "github_repo",
         "process",
         "service",
@@ -79,6 +80,66 @@ class EntityRecord:
         )
 
 
+_FOCUS_TYPES = frozenset(
+    {"file", "folder", "screen_entity", "application", "url", "browser_page"}
+)
+
+_CONTAINER_REF = re.compile(
+    r"\b(?:icine|içine|oraya|buraya|orada|burada)\b|"
+    r"\bonun\s+i[cç]ine\b",
+    re.IGNORECASE,
+)
+_FILE_TYPE_REF = re.compile(r"\b(o|bu|şu|su)\s+dosya", re.IGNORECASE)
+_FOLDER_TYPE_REF = re.compile(r"\b(o|bu|şu|su)\s+klas", re.IGNORECASE)
+
+
+def message_wants_container(text: str) -> bool:
+    return bool(_CONTAINER_REF.search(text or ""))
+
+
+@dataclass
+class ActiveFocus:
+    type: str
+    identifier: str
+    label: str | None = None
+    state_id: str | None = None
+    container: str | None = None
+    source: str = ""
+    recorded_at: str = field(default_factory=_utc_now)
+
+    def to_dict(self) -> dict[str, str]:
+        payload = {
+            "type": self.type,
+            "identifier": self.identifier,
+            "recorded_at": self.recorded_at,
+        }
+        if self.label:
+            payload["label"] = self.label
+        if self.state_id:
+            payload["state_id"] = self.state_id
+        if self.container:
+            payload["container"] = self.container
+        if self.source:
+            payload["source"] = self.source
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ActiveFocus | None:
+        identifier = str(data.get("identifier") or "").strip()
+        focus_type = str(data.get("type") or "").strip()
+        if not identifier or focus_type not in _FOCUS_TYPES:
+            return None
+        return cls(
+            type=focus_type,
+            identifier=identifier,
+            label=str(data.get("label") or "") or None,
+            state_id=str(data.get("state_id") or "") or None,
+            container=str(data.get("container") or "") or None,
+            source=str(data.get("source") or ""),
+            recorded_at=str(data.get("recorded_at") or _utc_now()),
+        )
+
+
 @dataclass
 class ConversationalContext:
     active_mission_id: str | None = None
@@ -114,6 +175,11 @@ class ConversationalContext:
     last_browser_page_text: str | None = None
     last_url: str | None = None
     last_browser_url: str | None = None
+    last_screen_state: dict[str, Any] | None = None
+    last_screen_entity_id: str | None = None
+    active_focus: ActiveFocus | None = None
+    container_focus: ActiveFocus | None = None
+    invalidated_targets: list[str] = field(default_factory=list)
     recent_files: list[str] = field(default_factory=list)
 
     @property
@@ -167,6 +233,11 @@ class ConversationalContext:
             "last_browser_page_text": self.last_browser_page_text,
             "last_url": self.last_url,
             "last_browser_url": self.last_browser_url,
+            "last_screen_state": dict(self.last_screen_state) if self.last_screen_state else None,
+            "last_screen_entity_id": self.last_screen_entity_id,
+            "active_focus": self.active_focus.to_dict() if self.active_focus else None,
+            "container_focus": self.container_focus.to_dict() if self.container_focus else None,
+            "invalidated_targets": list(self.invalidated_targets),
             "recent_files": self.recent_files,
             "recent_folders": self.recent_folders,
             "recent_tool_targets": self.recent_tool_targets,
@@ -230,6 +301,19 @@ class ConversationalContext:
             last_browser_page_text=data.get("last_browser_page_text"),
             last_url=data.get("last_url"),
             last_browser_url=data.get("last_browser_url"),
+            last_screen_state=dict(data.get("last_screen_state") or {})
+            if isinstance(data.get("last_screen_state"), dict)
+            else None,
+            last_screen_entity_id=data.get("last_screen_entity_id"),
+            active_focus=ActiveFocus.from_dict(data["active_focus"])
+            if isinstance(data.get("active_focus"), dict)
+            else None,
+            container_focus=ActiveFocus.from_dict(data["container_focus"])
+            if isinstance(data.get("container_focus"), dict)
+            else None,
+            invalidated_targets=[
+                str(item) for item in (data.get("invalidated_targets") or []) if str(item).strip()
+            ],
             recent_files=[str(item) for item in (data.get("recent_files") or [])],
             recent_folders=[str(item) for item in (data.get("recent_folders") or [])],
             recent_tool_targets=[
@@ -304,6 +388,7 @@ class ConversationalContext:
                 self.active_folder = newest_folder
                 if not self.last_created_folder:
                     self.last_created_folder = newest_folder
+        self._reconcile_focus_paths()
 
     @staticmethod
     def _path_exists(raw: str, *, expect_file: bool) -> bool:
@@ -327,6 +412,8 @@ class ConversationalContext:
             "last_action_summary": self.last_action_summary or None,
             "last_mission_summary": self.last_mission_summary or None,
             "recent_verified_actions": list(self.recent_verified_actions[:6]),
+            "active_focus": self.active_focus.to_dict() if self.active_focus else None,
+            "container_focus": self.container_focus.to_dict() if self.container_focus else None,
         }
 
     def save(self) -> None:
@@ -354,12 +441,109 @@ class ConversationalContext:
         self.recent_entities.insert(0, record)
         self.recent_entities = self.recent_entities[: _MAX_RECENT * 2]
 
-    def resolved_references(self) -> dict[str, str]:
+    def commit_focus(
+        self,
+        focus_type: str,
+        identifier: str,
+        *,
+        container: str | None = None,
+        state_id: str | None = None,
+        label: str | None = None,
+        source: str = "",
+    ) -> None:
+        if focus_type not in _FOCUS_TYPES or not identifier:
+            return
+        normalized = _normalize_path(identifier) if focus_type in {"file", "folder"} else identifier
+        parent = _normalize_path(container) if container else None
+        if focus_type == "file" and parent is None:
+            try:
+                parent = _normalize_path(str(Path(normalized).parent))
+            except (OSError, ValueError, TypeError):
+                parent = None
+        if focus_type == "folder" and parent is None:
+            parent = normalized
+        focus = ActiveFocus(
+            type=focus_type,
+            identifier=normalized or identifier,
+            label=label,
+            state_id=state_id,
+            container=parent,
+            source=source,
+        )
+        self.active_focus = focus
+        if focus_type == "folder":
+            self.container_focus = focus
+        elif parent:
+            self.container_focus = ActiveFocus(
+                type="folder",
+                identifier=parent,
+                label=Path(parent).name,
+                source=source or "container",
+            )
+        self.invalidated_targets = [
+            item
+            for item in self.invalidated_targets
+            if _normalize_path(item) != (normalized or identifier)
+            and item != identifier
+        ]
+        self.touch()
+
+    def invalidate_target(self, identifier: str | None) -> None:
+        if not identifier:
+            return
+        normalized = _normalize_path(identifier) or identifier
+        if normalized not in self.invalidated_targets:
+            self.invalidated_targets = [normalized, *self.invalidated_targets][:_MAX_RECENT]
+        if self.active_focus and (
+            self.active_focus.identifier == normalized or self.active_focus.identifier == identifier
+        ):
+            self.active_focus = None
+        if self.active_file in {normalized, identifier}:
+            self.active_file = None
+        self.touch()
+
+    def is_invalidated(self, identifier: str | None) -> bool:
+        if not identifier:
+            return False
+        normalized = _normalize_path(identifier) or identifier
+        return any(
+            item == identifier or item == normalized or _normalize_path(item) == normalized
+            for item in self.invalidated_targets
+        )
+
+    def focus_container(self) -> str | None:
+        if self.container_focus and self.container_focus.type == "folder":
+            if not self.is_invalidated(self.container_focus.identifier):
+                return self.container_focus.identifier
+        if self.active_focus:
+            if self.active_focus.type == "folder" and not self.is_invalidated(
+                self.active_focus.identifier
+            ):
+                return self.active_focus.identifier
+            if self.active_focus.container and not self.is_invalidated(self.active_focus.container):
+                return self.active_focus.container
+        return None
+
+    def _reconcile_focus_paths(self) -> None:
+        def _alive(focus: ActiveFocus | None, *, expect_file: bool | None) -> ActiveFocus | None:
+            if focus is None:
+                return None
+            if focus.type not in {"file", "folder"}:
+                return focus
+            exists = self._path_exists(
+                focus.identifier,
+                expect_file=True if focus.type == "file" else False,
+            )
+            return focus if exists else None
+
+        self.active_focus = _alive(
+            self.active_focus,
+            expect_file=self.active_focus.type == "file" if self.active_focus else None,
+        )
+        self.container_focus = _alive(self.container_focus, expect_file=False)
+
+    def resolved_references(self, message: str | None = None) -> dict[str, str]:
         refs: dict[str, str] = {}
-        if self.active_file:
-            refs["target_file"] = self.active_file
-        if self.active_folder:
-            refs["target_folder"] = self.active_folder
         if self.last_created_file:
             refs["last_created_file"] = self.last_created_file
         if self.last_renamed_file:
@@ -374,6 +558,42 @@ class ConversationalContext:
             refs["last_url"] = self.last_url
         if self.last_browser_url:
             refs["last_browser_url"] = self.last_browser_url
+
+        text = message or ""
+        wants_container = message_wants_container(text)
+        wants_file = bool(_FILE_TYPE_REF.search(text))
+        wants_folder = bool(_FOLDER_TYPE_REF.search(text))
+        container = self.focus_container()
+        focus = self.active_focus
+        focus_id = focus.identifier if focus and not self.is_invalidated(focus.identifier) else None
+
+        if wants_container and container:
+            refs["target_folder"] = container
+        elif wants_folder and container:
+            refs["target_folder"] = container
+        elif wants_file and focus and focus.type == "file" and focus_id:
+            refs["target_file"] = focus_id
+            if focus.container:
+                refs["target_folder"] = focus.container
+        elif focus and focus_id:
+            if focus.type == "file" and not wants_container:
+                refs["target_file"] = focus_id
+                if focus.container:
+                    refs["target_folder"] = focus.container
+            elif focus.type == "folder":
+                refs["target_folder"] = focus_id
+            elif focus.type == "screen_entity":
+                refs["session_entity_id"] = focus_id
+                if focus.state_id:
+                    refs["state_id"] = focus.state_id
+            elif focus.type in {"url", "browser_page"}:
+                refs["last_url"] = focus_id
+                refs["last_browser_url"] = focus_id
+
+        if refs.get("target_file") and self.is_invalidated(refs["target_file"]):
+            refs.pop("target_file", None)
+        if refs.get("target_folder") and self.is_invalidated(refs["target_folder"]):
+            refs.pop("target_folder", None)
         return refs
 
     def record_user_message(self, message: str) -> None:
@@ -499,8 +719,9 @@ class ConversationalContext:
                 self.last_verified_folder = folder
                 self.recent_folders = _dedupe_append(self.recent_folders, folder)
                 self.record_entity("folder", folder, label=Path(folder).name)
+                self.commit_focus("folder", folder, container=folder, source=tool_name)
 
-        elif tool_name in ("write_file", "create_file") and path_value:
+        elif tool_name in ("write_file", "create_file", "create_word_document") and path_value:
             file_path = _normalize_path(str(path_value))
             if file_path:
                 self.active_file = file_path
@@ -514,6 +735,7 @@ class ConversationalContext:
                 self.last_verified_folder = self.active_folder
                 self.recent_folders = _dedupe_append(self.recent_folders, self.active_folder)
                 self.record_entity("file", file_path, label=Path(file_path).name)
+                self.commit_focus("file", file_path, container=self.active_folder, source=tool_name)
 
         elif tool_name == "open_path" and path_value:
             opened = _normalize_path(str(path_value))
@@ -524,12 +746,15 @@ class ConversationalContext:
                     self.last_verified_folder = opened
                     self.recent_folders = _dedupe_append(self.recent_folders, opened)
                     self.record_entity("folder", opened, label=Path(opened).name)
+                    self.commit_focus("folder", opened, container=opened, source=tool_name)
                 else:
                     self.active_file = opened
                     self.last_opened_file = opened
                     self.last_verified_file = opened
                     self.recent_files = _dedupe_append(self.recent_files, opened)
                     self.record_entity("file", opened, label=Path(opened).name)
+                    parent = _normalize_path(str(Path(opened).parent))
+                    self.commit_focus("file", opened, container=parent, source=tool_name)
 
         elif tool_name == "read_file" and isinstance(output, dict):
             file_path = _normalize_path(str(output.get("path") or path_value or ""))
@@ -538,6 +763,8 @@ class ConversationalContext:
                 self.last_opened_file = file_path
                 self.recent_files = _dedupe_append(self.recent_files, file_path)
                 self.record_entity("file", file_path, label=Path(file_path).name)
+                parent = _normalize_path(str(Path(file_path).parent))
+                self.commit_focus("file", file_path, container=parent, source=tool_name)
 
         elif tool_name in ("copy_file", "move_file", "rename_path") and isinstance(output, dict):
             dest = output.get("destination") or output.get("path")
@@ -562,9 +789,12 @@ class ConversationalContext:
                             ]
                     self.recent_files = _dedupe_append(self.recent_files, dest_path)
                     self.record_entity("file", dest_path, label=Path(dest_path).name)
+                    parent = _normalize_path(str(Path(dest_path).parent))
+                    self.commit_focus("file", dest_path, container=parent, source=tool_name)
                 elif dest_path:
                     self.active_folder = dest_path
                     self.recent_folders = _dedupe_append(self.recent_folders, dest_path)
+                    self.commit_focus("folder", dest_path, container=dest_path, source=tool_name)
 
         elif tool_name == "delete_path" and isinstance(output, dict):
             deleted_path = _normalize_path(str(output.get("path") or path_value or ""))
@@ -578,6 +808,7 @@ class ConversationalContext:
                 if self.last_modified_file == deleted_path:
                     self.last_modified_file = None
                 self.recent_files = [item for item in self.recent_files if item != deleted_path]
+                self.invalidate_target(deleted_path)
 
         elif tool_name == "search_files" and isinstance(output, dict):
             matches = output.get("matches") or []
@@ -623,14 +854,21 @@ class ConversationalContext:
                 self.last_browser_url = url
                 self.record_entity("url", url, label=url[:80])
                 self.record_entity("browser_page", url, label=url[:80])
+                self.commit_focus("url", url, label=url[:80], source=tool_name)
 
         elif tool_name == "read_screen_text" and isinstance(output, dict):
             from hermes.mission.reality_verification import normalize_visible_page_text
+            from hermes.screen.store import remember_screen_state
+            from hermes.screen.models import ScreenState
 
             text, _error = normalize_visible_page_text(output)
             window_title = str(output.get("window_title") or output.get("title") or "").strip()
             if window_title:
                 self.record_entity("browser_window", window_title, label=window_title[:80])
+            state_payload = output.get("screen_state")
+            if isinstance(state_payload, dict):
+                self.last_screen_state = dict(state_payload)
+                remember_screen_state(ScreenState.from_dict(state_payload))
             if text:
                 self.last_browser_page_text = text[:4000]
                 self.record_entity("screen_text", text[:500], label="Sayfa metni")
@@ -638,6 +876,33 @@ class ConversationalContext:
                 payload = dict(output)
                 payload["content_type"] = "screen_text"
                 self.last_tool_result = payload
+
+        elif tool_name == "resolve_screen_entity" and isinstance(output, dict):
+            entity_id = str(output.get("entity_id") or "").strip()
+            if entity_id:
+                self.record_entity(
+                    "screen_entity",
+                    entity_id,
+                    label=str(output.get("text") or entity_id)[:80],
+                )
+
+        elif tool_name in ("click", "click_text") and isinstance(output, dict):
+            entity_id = str(output.get("entity_id") or "").strip()
+            if entity_id:
+                self.last_screen_entity_id = entity_id
+                state_id = str(output.get("state_id") or "").strip() or None
+                self.record_entity(
+                    "screen_entity",
+                    entity_id,
+                    label=str(output.get("text") or entity_id)[:80],
+                )
+                self.commit_focus(
+                    "screen_entity",
+                    entity_id,
+                    state_id=state_id,
+                    label=str(output.get("text") or entity_id)[:80],
+                    source=tool_name,
+                )
 
         if path_value:
             self.recent_tool_targets = _dedupe_append_dict(
@@ -681,7 +946,29 @@ class ConversationalContext:
             output = step.metadata.get("tool_output")
             if output is None and isinstance(step.observation, dict):
                 output = step.observation.get("data") or step.observation
-            self.update_from_tool(step.tool_name, output, success=True, verified=True)
+            verified = _step_output_is_verified(step, output)
+            self.update_from_tool(step.tool_name, output, success=True, verified=verified)
+
+
+def _step_output_is_verified(step: Any, output: Any) -> bool:
+    tool_name = str(getattr(step, "tool_name", "") or "")
+    metadata = getattr(step, "metadata", None) or {}
+    status = str(
+        metadata.get("verification_status")
+        or (output.get("verification_status") if isinstance(output, dict) else "")
+        or ""
+    ).casefold()
+    if tool_name in {"click", "click_text", "resolve_screen_entity"}:
+        if isinstance(output, dict) and output.get("verified") is True:
+            return True
+        return status == "verified"
+    if status in {"unknown", "failed"}:
+        return False
+    if isinstance(output, dict) and (
+        output.get("verified") is False or output.get("verification_failed")
+    ):
+        return False
+    return True
 
 
 def _dedupe_append_dict(items: list[dict[str, Any]], value: dict[str, Any]) -> list[dict[str, Any]]:

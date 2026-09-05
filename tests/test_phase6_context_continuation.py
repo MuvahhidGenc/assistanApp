@@ -186,7 +186,7 @@ async def test_orchestrator_context_only_after_verification(settings, tmp_path):
 def _make_real_pc_process(desktop: Path):
     registry = create_default_registry()
 
-    async def process(self, command, run_id="", skip_approval=False, *, user_message=""):
+    async def process(self, command, run_id="", skip_approval=False, *, user_message="", verify=True):
         tool_name, arguments = parse_pc_command(command)
         tool = registry.get(tool_name)
         if not tool:

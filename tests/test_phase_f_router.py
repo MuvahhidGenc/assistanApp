@@ -72,11 +72,13 @@ def test_model_references_are_used_as_arguments():
 
 def test_session_state_fills_an_argument_the_user_did_not_repeat(tmp_path):
     context = ConversationalContext()
-    context.last_created_file = str(tmp_path / "onceki.txt")
+    path = str(tmp_path / "onceki.txt")
+    context.last_created_file = path
+    context.commit_focus("file", path, source="test")
 
     pool = build_input_pool(_intent(), context)
 
-    assert pool["path"] == str(tmp_path / "onceki.txt")
+    assert pool["path"] == path
 
 
 def test_what_the_user_just_said_beats_session_state(tmp_path):
@@ -87,7 +89,13 @@ def test_what_the_user_just_said_beats_session_state(tmp_path):
     assert build_input_pool(intent, context)["path"] == "C:/yeni.txt"
 
 
-def test_planned_step_inputs_reach_the_pool():
+def test_planned_step_inputs_are_used_by_that_step(router):
+    """Inputs belong to the step that declared them, not a shared pool.
+
+    Dumping every planned input into one pool made filesystem.search's folder
+    look like filesystem.open's file. The write step below must still receive
+    its own path and content.
+    """
     intent = AgentIntent.from_dict(
         {
             "goal": "dosya yaz",
@@ -99,7 +107,13 @@ def test_planned_step_inputs_reach_the_pool():
         }
     )
 
-    assert build_input_pool(intent)["content"] == "merhaba"
+    pool = build_input_pool(intent)
+    steps, unfillable = router._build_capability_steps(intent, pool)
+
+    assert unfillable == ()
+    assert steps[0].tool_name in {"write_file", "create_word_document"}
+    assert steps[0].tool_arguments["path"] == "C:/a.txt"
+    assert steps[0].tool_arguments["content"] == "merhaba"
 
 
 def test_a_plan_implies_the_capability_summary():
@@ -148,7 +162,14 @@ def test_steps_are_chained_in_the_stated_order(router):
 
 
 def test_a_capability_we_cannot_supply_arguments_for_is_not_guessed_at(router):
-    """Live output carried a spurious capability the sentence never asked for."""
+    """A required capability without inputs is a question, not a partial plan.
+
+    The previous assertion locked a bug: filesystem.list ran while
+    browser.navigate was dropped, and the route stayed CAPABILITY_PLAN. That
+    let a later mission complete after listing a folder even though navigate
+    never happened. Guessing a URL is still forbidden; so is silently
+    dropping the required step.
+    """
     intent = _intent(
         required_capabilities=["filesystem.list", "browser.navigate"],
         references={"path": "C:/klasor"},
@@ -156,8 +177,44 @@ def test_a_capability_we_cannot_supply_arguments_for_is_not_guessed_at(router):
 
     plan = router.route(intent, confidence=Confidence.HIGH)
 
-    assert [s.metadata["capability"] for s in plan.steps] == ["filesystem.list"]
+    assert plan.kind == RouteKind.QUESTION
     assert plan.unfillable_capabilities == ("browser.navigate",)
+    assert plan.steps == []
+    assert not plan.is_executable
+    assert "http" not in (plan.question or "").casefold()
+
+
+def test_search_then_open_binds_prior_output_without_guessing_a_path(router):
+    intent = AgentIntent.from_dict(
+        {
+            "goal": "indirmelerde raporu bul ve ac",
+            "plan": [
+                {
+                    "capability": "filesystem.search",
+                    "inputs": {"path": "C:/Downloads", "pattern": "*rapor*"},
+                },
+                {"capability": "filesystem.open", "inputs": {}},
+            ],
+            "confidence": 0.9,
+        }
+    )
+
+    plan = router.route(intent, confidence=Confidence.HIGH)
+
+    assert plan.kind == RouteKind.CAPABILITY_PLAN
+    assert [step.metadata["capability"] for step in plan.steps] == [
+        "filesystem.search",
+        "filesystem.open",
+    ]
+    assert plan.steps[1].tool_name == "open_path"
+    assert not plan.steps[1].tool_arguments.get("path")
+    assert plan.steps[1].argument_bindings == [
+        {
+            "argument": "path",
+            "source_step_id": plan.steps[0].step_id,
+            "source_field": "path",
+        }
+    ]
 
 
 def test_a_state_changing_step_with_nothing_to_act_on_is_refused(router):
@@ -229,6 +286,7 @@ def test_a_command_alongside_a_capability_we_lack_is_refused(router):
 
     plan = router.route(intent, confidence=Confidence.RISKY)
 
+    assert plan.kind == RouteKind.QUESTION
     assert "terminal.execute" in plan.unfillable_capabilities
     assert "service.manage" in plan.unfillable_capabilities
 
@@ -465,6 +523,7 @@ def test_a_follow_up_uses_session_file_without_inventing_a_path(router, tmp_path
     context = ConversationalContext()
     created = str(tmp_path / "onceki.docx")
     context.last_created_file = created
+    context.commit_focus("file", created, source="test")
 
     intent = AgentIntent.from_dict(
         {

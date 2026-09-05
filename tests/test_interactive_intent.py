@@ -23,9 +23,19 @@ def test_match_browser_back():
 
 def test_match_click_video_title():
     intent = match_local_intent("Tevhid videosunu ac")
+    assert intent is None or intent.request.name != "click_text"
+
+
+def test_match_literal_visible_label_still_click_text():
+    intent = match_local_intent("Abone ol yazisina tikla")
     assert intent is not None
     assert intent.request.name == "click_text"
-    assert "Tevhid" in intent.request.arguments.get("text", "")
+    assert "Abone" in intent.request.arguments.get("text", "")
+
+
+def test_spatial_video_reference_is_not_literal_click_text():
+    intent = match_local_intent("ortadaki videoyu ac")
+    assert intent is None or intent.request.name != "click_text"
 
 
 def test_match_read_screen_results():

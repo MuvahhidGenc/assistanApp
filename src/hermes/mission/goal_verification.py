@@ -51,6 +51,44 @@ def record_goal_check(
     )
 
 
+def required_capabilities_met(mission: Any) -> bool:
+    """Every canonical required capability must have completed with evidence.
+
+    UNKNOWN is "no evidence". It does not satisfy a required capability,
+    even if a step was marked completed.
+    """
+    required = [
+        str(item).strip()
+        for item in (mission.working_context.get("required_capabilities") or [])
+        if str(item).strip()
+    ]
+    if not required:
+        return True
+    satisfied: set[str] = set()
+    for step in mission.steps:
+        status = getattr(step.status, "value", step.status)
+        verification = str(getattr(step, "verification_status", "") or "")
+        if status != "completed":
+            continue
+        if verification == "unknown":
+            continue
+        if verification and verification not in {"verified", "not_required"}:
+            continue
+        capability = str((getattr(step, "metadata", None) or {}).get("capability") or "")
+        if capability:
+            satisfied.add(capability)
+    return set(required) <= satisfied
+
+
+def unknown_verification_blocks_completion(mission: Any) -> bool:
+    """UNKNOWN must never become mission COMPLETED."""
+    for step in getattr(mission, "steps", None) or []:
+        verification = str(getattr(step, "verification_status", "") or "")
+        if verification == "unknown":
+            return True
+    return False
+
+
 def finalize_mission_goal(mission: Any, *, all_steps_done: bool) -> GoalCheckResult:
     """Final gate: COMPLETED only when GOAL_ACHIEVED && STATE_VERIFIED."""
     check = mission.working_context.get("goal_check") or {}
@@ -78,6 +116,28 @@ def finalize_mission_goal(mission: Any, *, all_steps_done: bool) -> GoalCheckRes
             goal_achieved=achieved,
             status=status,
             message=message or "Hedef dogrulanamadi.",
+            audit=audit,
+        )
+
+    # Intent plans record required_capabilities. Completing a subset is not
+    # the same as achieving the goal the user asked for.
+    if not required_capabilities_met(mission):
+        return GoalCheckResult(
+            step_success=all_steps_done,
+            state_verified=False,
+            goal_achieved=False,
+            status="partial",
+            message="Gorev kismen tamamlandi; zorunlu bir adim gerceklesmedi.",
+            audit=audit,
+        )
+
+    if unknown_verification_blocks_completion(mission):
+        return GoalCheckResult(
+            step_success=False,
+            state_verified=False,
+            goal_achieved=False,
+            status="failed",
+            message="Adim dogrulanamadi; kanit yok.",
             audit=audit,
         )
 

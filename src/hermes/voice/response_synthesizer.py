@@ -259,10 +259,48 @@ def synthesize_task_started(user_message: str) -> str | None:
     return None
 
 
+_INCOMPLETE_OUTCOMES = frozenset(
+    {"failed", "partial", "waiting", "question", "unsupported", "cancelled"}
+)
+_INCOMPLETE_MARKERS = (
+    "kismen",
+    "kısmen",
+    "tamamlanamadi",
+    "tamamlanamadı",
+    "yapamiyorum",
+    "yapamıyorum",
+    "cozulemedi",
+    "çözülemedi",
+    "bekleniyor",
+    "netlestir",
+    "netleştir",
+    "bilgiye ihtiyac",
+    "zorunlu bir adim",
+    "unsupported",
+)
+_SUCCESS_SPEECH = (
+    "tamam, bitti",
+    "tamam, hallettim",
+    "gorev tamamlandi",
+    "görev tamamlandı",
+    "mission tamamlandi",
+    "mission tamamlandı",
+)
+
+
+def _is_incomplete_outcome(outcome: str | None, text: str) -> bool:
+    if (outcome or "").strip().casefold() in _INCOMPLETE_OUTCOMES:
+        return True
+    lower = (text or "").casefold()
+    return any(marker in lower for marker in _INCOMPLETE_MARKERS)
+
+
 def synthesize_task_completed(
     user_message: str,
     response_text: str,
     tool_results: list[dict[str, Any]] | None = None,
+    *,
+    outcome: str | None = None,
 ) -> str | None:
     """Natural completion/failure/clarification line from user-facing response text."""
     raw = (response_text or "").strip()
@@ -337,6 +375,21 @@ def synthesize_task_completed(
             return "Silemedim."
         return "Tamamlayamadım."
 
+    if _is_incomplete_outcome(outcome, lower) or _is_incomplete_outcome(outcome, lower_raw):
+        if text.endswith("?"):
+            return text if len(text) <= 96 else "Biraz daha açar mısın?"
+        if any(token in lower for token in ("basarisiz", "başarısız", "yapamad", "tamamlanamad")):
+            return "İşi tamamlayamadım."
+        first = text.split("\n", 1)[0].strip()
+        folded_first = first.casefold()
+        if (
+            first
+            and len(first) <= 96
+            and not any(phrase in folded_first for phrase in _SUCCESS_SPEECH)
+        ):
+            return first.rstrip(".!")
+        return "İşi tamamlayamadım."
+
     # Success — map from user_messages patterns
     folder_created = re.search(
         r"^(.+?)\s+klasorunu\s+(?:masaustunde\s+)?olusturdum",
@@ -406,16 +459,19 @@ def synthesize_task_completed(
         if not success:
             return synthesize_task_completed(user_message, "Basarisiz.", tool_results=None)
 
+    if (outcome or "").strip().casefold() == "completed":
+        done_words = ("tamam", "bitti", "hazir", "hazır", "tamamlandi", "tamamlandı")
+        if any(word in lower for word in done_words):
+            return "Tamam, bitti."
+        return "Tamam, hallettim."
+
     # Conversational short replies
     if len(text) <= 72 and not any(marker in lower for marker in _TOOL_NAMES):
         first = text.split("\n", 1)[0].strip()
         if first and not _PATH_PATTERN.search(first):
             return first.rstrip(".!?")
 
-    if any(w in lower for w in ("tamam", "bitti", "hazir", "hazır", "tamamlandi", "tamamlandı")):
-        return "Tamam, bitti."
-
-    return "Tamam, hallettim."
+    return None
 
 
 def should_speak_event(event: TTSEvent, *, elapsed_ms: float = 0.0, start_delay_ms: float = 850.0) -> bool:

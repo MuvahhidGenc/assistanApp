@@ -155,7 +155,7 @@ async def test_write_file_single_execution_and_status(
 
     orchestrator._on_status = capture_status
 
-    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message=""):
+    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message="", verify=True):
         nonlocal write_calls
         name = command["name"] if isinstance(command, dict) else ""
         if name == "write_file":

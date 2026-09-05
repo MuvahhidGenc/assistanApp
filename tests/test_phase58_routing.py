@@ -152,7 +152,7 @@ async def test_orchestrator_empty_create_executes(settings: AppSettings, tmp_pat
     orchestrator = AgentOrchestrator(settings, server)
     calls: list[str] = []
 
-    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message=""):
+    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message="", verify=True):
         calls.append(command["name"])
         target = Path(str(command["arguments"]["path"]))
         target.parent.mkdir(parents=True, exist_ok=True)

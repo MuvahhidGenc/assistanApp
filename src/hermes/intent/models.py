@@ -158,6 +158,24 @@ class AgentIntent:
         }
 
 
+def canonical_required_capabilities(intent: AgentIntent) -> tuple[str, ...]:
+    """The goal the user actually asked for.
+
+    Plan and required_capabilities are independent sources. A short plan must
+    not drop a capability that was still declared as required.
+    """
+    seen: dict[str, None] = {}
+    for step in intent.plan:
+        capability = str(step.capability or "").strip()
+        if capability:
+            seen.setdefault(capability, None)
+    for item in intent.required_capabilities:
+        capability = str(item or "").strip()
+        if capability:
+            seen.setdefault(capability, None)
+    return tuple(seen)
+
+
 @dataclass(frozen=True)
 class IntentValidation:
     ok: bool = False

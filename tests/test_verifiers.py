@@ -349,3 +349,120 @@ def test_default_registry_has_specific_verifiers():
     assert reg.get("write_file") is not None
     assert reg.get("create_folder") is not None
     assert reg.get("open_url") is not None
+    assert reg.get("read_file") is not None
+    assert reg.get("open_path") is not None
+    assert reg.get("open_app") is not None
+
+
+@pytest.mark.asyncio
+async def test_read_file_verifier_rejects_a_lying_success(tmp_path):
+    missing = tmp_path / "ghost.txt"
+    from hermes.tools.verifiers.specific import ReadFileVerifier
+
+    result = await ReadFileVerifier().verify(
+        _ctx(
+            "read_file",
+            output={"path": str(missing), "content": "forged", "exists": True},
+            arguments={"path": str(missing)},
+        )
+    )
+    assert result.status == VerificationStatus.FAILED
+    assert result.method == "read_file_filesystem"
+
+
+@pytest.mark.asyncio
+async def test_read_file_verifier_confirms_a_real_file(tmp_path, monkeypatch):
+    target = tmp_path / "note.txt"
+    target.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes.tools.windows.file_tools.resolve_user_path",
+        lambda raw: Path(raw),
+    )
+    from hermes.tools.verifiers.specific import ReadFileVerifier
+
+    result = await ReadFileVerifier().verify(
+        _ctx(
+            "read_file",
+            output={"path": str(target), "content": "hello", "exists": True},
+            arguments={"path": str(target)},
+        )
+    )
+    assert result.status == VerificationStatus.VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_open_path_verifier_rejects_a_missing_path(tmp_path):
+    missing = tmp_path / "nope"
+    from hermes.tools.verifiers.specific import OpenPathVerifier
+
+    result = await OpenPathVerifier().verify(
+        _ctx(
+            "open_path",
+            output={"path": str(missing), "verified": True},
+            arguments={"path": str(missing)},
+        )
+    )
+    assert result.status == VerificationStatus.FAILED
+    assert result.method == "open_path_filesystem"
+
+
+@pytest.mark.asyncio
+async def test_open_path_verifier_confirms_existing_path(tmp_path):
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    from hermes.tools.verifiers.specific import OpenPathVerifier
+
+    result = await OpenPathVerifier().verify(
+        _ctx(
+            "open_path",
+            output={"path": str(folder), "verified": True},
+            arguments={"path": str(folder)},
+        )
+    )
+    assert result.status == VerificationStatus.VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_open_app_verifier_rejects_a_missing_binary(tmp_path):
+    from hermes.tools.verifiers.specific import OpenAppVerifier
+
+    result = await OpenAppVerifier().verify(
+        _ctx(
+            "open_app",
+            output={
+                "app": "chrome",
+                "path": str(tmp_path / "chrome.exe"),
+                "verified": True,
+                "window_title": "Chrome",
+            },
+            arguments={"app": "chrome"},
+        )
+    )
+    assert result.status == VerificationStatus.FAILED
+    assert result.details.get("reason") == "app_binary_missing"
+
+
+@pytest.mark.asyncio
+async def test_open_app_verifier_does_not_trust_self_reported_window(tmp_path, monkeypatch):
+    binary = tmp_path / "app.exe"
+    binary.write_bytes(b"mz")
+    monkeypatch.setattr(
+        "hermes.tools.windows.input_backend.find_app_window_title",
+        lambda app, **kwargs: None,
+    )
+    from hermes.tools.verifiers.specific import OpenAppVerifier
+
+    result = await OpenAppVerifier().verify(
+        _ctx(
+            "open_app",
+            output={
+                "app": "notepad",
+                "path": str(binary),
+                "reused": True,
+                "verified": True,
+                "window_title": "Notepad",
+            },
+            arguments={"app": "notepad"},
+        )
+    )
+    assert result.status == VerificationStatus.UNKNOWN

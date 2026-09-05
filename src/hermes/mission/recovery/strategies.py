@@ -271,6 +271,47 @@ class DnsRetryStrategy(RecoveryStrategy):
         ]
 
 
+class ScreenSearchScrollStrategy(RecoveryStrategy):
+    strategy_id = "screen_search_scroll"
+    applicable_tools = ("resolve_screen_entity",)
+    applicable_errors = (ErrorCategory.NOT_FOUND, ErrorCategory.TOOL_FAILURE)
+    max_attempts = 4
+    risk_level = RiskLevel.LOW_RISK
+
+    def matches(self, ctx: RecoveryContext) -> bool:
+        if not super().matches(ctx):
+            return False
+        output = getattr(ctx.last_result, "output", None)
+        if isinstance(output, dict) and output.get("needs_user"):
+            return False
+        return True
+
+    def build_actions(self, ctx: RecoveryContext) -> list[RecoveryAction]:
+        return [
+            RecoveryAction(
+                strategy_id=self.strategy_id,
+                tool_name="scroll",
+                tool_arguments={"direction": "down"},
+                user_message="Hedef gorunmuyor. Kaydirip tekrar bakiyorum.",
+                risk_level=RiskLevel.LOW_RISK,
+            ),
+            RecoveryAction(
+                strategy_id=self.strategy_id,
+                tool_name="read_screen_text",
+                tool_arguments={},
+                user_message="Ekrani yeniden okuyorum.",
+                risk_level=RiskLevel.READ_ONLY,
+            ),
+            RecoveryAction(
+                strategy_id=self.strategy_id,
+                tool_name="resolve_screen_entity",
+                tool_arguments=dict(ctx.step.tool_arguments),
+                user_message="Ekrandaki hedefi yeniden ariyorum.",
+                risk_level=RiskLevel.READ_ONLY,
+            ),
+        ]
+
+
 class VerificationRetryStrategy(RecoveryStrategy):
     strategy_id = "verification_retry_original"
     applicable_tools = ()
@@ -354,6 +395,7 @@ def create_default_strategies() -> list[RecoveryStrategy]:
         CreateFolderParentStrategy(),
         WriteFileParentStrategy(),
         DnsRetryStrategy(),
+        ScreenSearchScrollStrategy(),
         VerificationRetryStrategy(),
         RetrySameToolStrategy(),
         # Last: prefer a targeted fix or a plain retry before switching mechanism.

@@ -45,7 +45,8 @@ _CONTEXTUAL_FOLDER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"ayni\s+klas(?:o|ö)re", re.IGNORECASE),
     re.compile(r"\b(o|bu|şu|su)\s+klas(?:ö|o)r(?:u|ü|e|a|une|üne|re|ye)?\b", re.IGNORECASE),
     re.compile(r"\b(oraya|buraya)\b", re.IGNORECASE),
-    re.compile(r"^(?:icine|içine)\b", re.IGNORECASE),
+    re.compile(r"\b(?:icine|içine)\b", re.IGNORECASE),
+    re.compile(r"\bonun\s+i[cç]ine\b", re.IGNORECASE),
 )
 
 _CREATE_VERBS = re.compile(
@@ -144,11 +145,17 @@ def extract_new_filename(text: str) -> str | None:
 def is_file_create_message(text: str) -> bool:
     """True when the user wants to create/write a file, not a standalone folder."""
     lower = (text or "").casefold()
+    if re.search(r"içeriğini|icerigini|dosyan[ıi]n\s+i[cç]ine", lower):
+        return False
     if re.search(r"\.txt|\.md|\.docx|\bdosya\b", lower) and _CREATE_VERBS.search(text or ""):
         return True
     if re.search(r"icine|içine", lower) and extract_new_filename(text):
         return True
     if extract_new_filename(text) and _CREATE_VERBS.search(text or ""):
+        return True
+    if message_uses_contextual_folder(text) and re.search(
+        r"\b(word|docx|\.docx|\.txt|txt|dosya)\b", lower
+    ):
         return True
     return False
 

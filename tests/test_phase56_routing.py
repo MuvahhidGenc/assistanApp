@@ -119,7 +119,7 @@ async def test_orchestrator_create_folder_executes_tool(
     orchestrator = AgentOrchestrator(settings, server)
     calls: list[str] = []
 
-    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message=""):
+    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message="", verify=True):
         calls.append(command["name"])
         if command["name"] == "create_folder":
             Path(str(command["arguments"]["path"])).mkdir(parents=True, exist_ok=True)

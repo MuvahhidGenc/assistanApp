@@ -871,7 +871,9 @@ def find_dependency_output(
     return None
 
 
-def resolve_argument_binding(mission: Mission, binding: dict[str, str]) -> str | None:
+def resolve_argument_binding(mission: Mission, binding: dict[str, str]) -> Any:
+    from hermes.tools.capabilities import extract_structured_value
+
     source_step_id = str(binding.get("source_step_id") or "").strip()
     source_field = str(binding.get("source_field") or "").strip()
     if not source_step_id or not source_field:
@@ -895,7 +897,19 @@ def resolve_argument_binding(mission: Mission, binding: dict[str, str]) -> str |
                 return str(dest)
         return None
 
-    return None
+    output = get_step_tool_output(mission, source_step_id)
+    if output is None:
+        step = next((item for item in mission.steps if item.step_id == source_step_id), None)
+        observation = getattr(step, "observation", None) if step is not None else None
+        data = observation.get("data") if isinstance(observation, dict) else None
+        if isinstance(data, dict):
+            output = data.get("verified_output") if isinstance(data.get("verified_output"), dict) else data
+    value = extract_structured_value(output, source_field)
+    if value in (None, "", []):
+        return None
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value
+    return str(value)
 
 
 def resolve_write_file_content(step: MissionStep, mission: Mission) -> str | None:

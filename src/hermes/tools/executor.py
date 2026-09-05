@@ -93,8 +93,9 @@ class ToolExecutor:
         payload.verification_method = result.method
         payload.verification_details = result.details
 
-        # A tool reporting success while the state says otherwise is a failure.
-        # UNKNOWN and timeouts are not evidence of failure, so they stand.
+        # FAILED contradicts the tool. UNKNOWN / timeout is "no evidence":
+        # standalone success stands here. MissionEngine does not treat
+        # UNKNOWN as a completed step.
         if payload.success and result.status == VerificationStatus.FAILED:
             payload.success = False
             payload.error = payload.error or f"{tool_name} dogrulanamadi: {result.method}"

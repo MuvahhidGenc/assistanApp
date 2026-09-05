@@ -55,6 +55,15 @@ logger = get_logger(__name__)
 ExecuteLocalTool = Callable[[LocalToolRequest, str], Awaitable[Any]]
 
 
+def _bound_argument_missing(argument: str, value: Any) -> bool:
+    """Coordinates use 0 as a real location; only None is missing there."""
+    if argument in {"x", "y"}:
+        return value is None
+    if argument in {"entity_id", "text", "bbox", "screen_state", "session_entity_id"}:
+        return False
+    return not value
+
+
 @dataclass
 class EngineResult:
     handled: bool = False
@@ -369,6 +378,7 @@ class MissionEngine:
 
         mission.status = MissionStatus.RUNNING
         initialize_output_tracking(mission)
+        self._apply_pending_screen_resolve(mission)
         self._store.save(mission)
 
         summaries: list[str] = []
@@ -576,8 +586,30 @@ class MissionEngine:
             return outcome
 
         resolved_args = resolve_step_tool_arguments(step, mission)
-        if step.tool_name in ("write_file", "rename_path", "open_path", "copy_file", "move_file", "read_screen_text"):
-            step.tool_arguments = resolved_args
+        if step.tool_name == "resolve_screen_entity":
+            resolved_args = self._bind_live_screen_resolve_args(mission, resolved_args)
+        step.tool_arguments = resolved_args
+        if step.argument_bindings:
+            missing = [
+                str(binding.get("argument") or "")
+                for binding in step.argument_bindings
+                if str(binding.get("argument") or "")
+                and _bound_argument_missing(
+                    str(binding.get("argument") or ""),
+                    resolved_args.get(str(binding.get("argument") or "")),
+                )
+            ]
+            if missing:
+                step.execution_status = "failed"
+                step.status = MissionStepStatus.FAILED
+                step.completed_at = _utc_now()
+                step.result_summary = (
+                    "Onceki adimdan zorunlu girdi uretilemedi: " + ", ".join(missing)
+                )
+                outcome.summary_line = f"- {step.title}: BASARISIZ ({step.result_summary})"
+                outcome.mission_failed = True
+                self._store.save(mission)
+                return outcome
 
         if step.tool_name == "search_files" and step.step_id in ("scan_pdfs", "search_source_files"):
             cached_outcome = self._maybe_reuse_cached_search(mission, step, outcome)
@@ -2196,6 +2228,9 @@ class MissionEngine:
             return outcome
 
         result = await execute_tool(step.tool_name or "", step.tool_arguments, run_id)
+        result = await self._maybe_continue_screen_resolve(
+            mission, step, result, run_id, execute_tool, guard
+        )
         execution_success = bool(getattr(result, "success", False))
         guard.record_action(
             step.tool_name or "", step.tool_arguments, made_progress=execution_success
@@ -2205,6 +2240,7 @@ class MissionEngine:
             auditor.tool_executed(step.tool_name, success=execution_success, step_id=step.step_id)
         if execution_success:
             record_step_tool_output(mission, step, getattr(result, "output", None))
+            self._remember_screen_output(mission, getattr(result, "output", None))
             if step.tool_name == "open_url":
                 output = getattr(result, "output", None)
                 url = ""
@@ -2264,6 +2300,26 @@ class MissionEngine:
         )
 
         if not execution_success:
+            output = getattr(result, "output", None)
+            if isinstance(output, dict) and output.get("needs_user"):
+                reason = str(output.get("clarification") or "Hangi ogeyi kastediyorsun?")
+                step.status = MissionStepStatus.FAILED
+                step.execution_status = "needs_user"
+                step.result_summary = reason
+                mission.status = MissionStatus.WAITING_FOR_USER
+                mission.waiting_for_user_reason = reason
+                mission.failed_step_id = step.step_id
+                mission.working_context["pending_screen_resolve"] = {
+                    "step_id": step.step_id,
+                    "reference": str(step.tool_arguments.get("reference") or ""),
+                    "candidates": output.get("candidates"),
+                }
+                self._store.save(mission)
+                outcome.waiting_for_user = True
+                outcome.continue_plan = False
+                outcome.summary_line = reason
+                outcome.user_messages.append(reason)
+                return outcome
             error_text = str(getattr(result, "error", "") or "Basarisiz")
             mission.status = MissionStatus.RECOVERING
             mission.recovery_count += 1
@@ -2319,7 +2375,12 @@ class MissionEngine:
 
         verify_outcome = await self._apply_verification(step, result, run_id, auditor=auditor)
         v_status = step.verification_status or VerificationStatus.UNKNOWN.value
-        if v_status in (VerificationStatus.VERIFIED.value, VerificationStatus.NOT_REQUIRED.value):
+        # UNKNOWN is "no evidence". ToolExecutor may keep tool success, but
+        # the mission must not treat that as a completed step.
+        if v_status in (
+            VerificationStatus.VERIFIED.value,
+            VerificationStatus.NOT_REQUIRED.value,
+        ):
             step.status = MissionStepStatus.COMPLETED
             if step.tool_name == "search_files":
                 observation = step.observation if isinstance(step.observation, dict) else {}
@@ -2415,7 +2476,12 @@ class MissionEngine:
             }
         )
         self._store.save(mission)
-        outcome.summary_line = f"- {step.title}: DOGRULAMA BASARISIZ ({step.result_summary})"
+        verify_label = (
+            "DOGRULAMA BELIRSIZ"
+            if v_status == VerificationStatus.UNKNOWN.value
+            else "DOGRULAMA BASARISIZ"
+        )
+        outcome.summary_line = f"- {step.title}: {verify_label} ({step.result_summary})"
         outcome.mission_failed = True
         return outcome
 
@@ -2478,6 +2544,99 @@ class MissionEngine:
         # Missions verify through _observe_and_verify, which has the step and an
         # observe callback; executor-level verification would duplicate it.
         return await self._executor.execute_tool_call(tool_call, run_id=run_id, verify=False)
+
+    def _bind_live_screen_resolve_args(
+        self, mission: Mission, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Prefer the latest observe snapshot over a stale singleton."""
+        args = dict(arguments or {})
+        latest = mission.working_context.get("last_screen_state")
+        if isinstance(latest, dict):
+            args["screen_state"] = latest
+        session_id = str(mission.working_context.get("last_screen_entity_id") or "").strip()
+        if session_id and not str(args.get("session_entity_id") or "").strip():
+            args["session_entity_id"] = session_id
+        return args
+
+    def _apply_pending_screen_resolve(self, mission: Mission) -> None:
+        pending = mission.working_context.get("pending_screen_resolve")
+        if not isinstance(pending, dict):
+            return
+        step_id = str(pending.get("step_id") or "").strip()
+        step = next((item for item in mission.steps if item.step_id == step_id), None)
+        if step is None or step.tool_name != "resolve_screen_entity":
+            return
+        user_text = ""
+        for item in reversed(mission.user_interventions or []):
+            if isinstance(item, dict) and item.get("type") == "user_response":
+                user_text = str(item.get("response") or "").strip()
+                break
+        if not user_text:
+            user_text = str(mission.working_context.get("continuation_message") or "").strip()
+        if not user_text:
+            return
+        original = str(pending.get("reference") or step.tool_arguments.get("reference") or "")
+        combined = f"{original} {user_text}".strip() if original else user_text
+        step.tool_arguments = dict(step.tool_arguments or {})
+        step.tool_arguments["reference"] = combined
+        step.status = MissionStepStatus.PENDING
+        step.execution_status = ""
+        step.result_summary = ""
+        step.completed_at = None
+        mission.working_context.pop("pending_screen_resolve", None)
+
+    def _remember_screen_output(self, mission: Mission, output: Any) -> None:
+        if not isinstance(output, dict):
+            return
+        state = output.get("screen_state")
+        if not isinstance(state, dict):
+            return
+        mission.working_context["last_screen_state"] = state
+        entity_id = str(output.get("entity_id") or "").strip()
+        if entity_id:
+            mission.working_context["last_screen_entity_id"] = entity_id
+
+    async def _maybe_continue_screen_resolve(
+        self,
+        mission: Mission,
+        step: MissionStep,
+        result: Any,
+        run_id: str,
+        execute_tool: Callable[[str, dict[str, Any], str], Awaitable[Any]],
+        guard: ExecutionGuard,
+    ) -> Any:
+        if step.tool_name != "resolve_screen_entity":
+            return result
+        from hermes.screen.loop import is_user_disambiguation, needs_visible_search, search_visible_area
+
+        if is_user_disambiguation(result) or not needs_visible_search(result):
+            return result
+
+        async def resolve() -> Any:
+            return await execute_tool(
+                step.tool_name or "",
+                self._bind_live_screen_resolve_args(mission, dict(step.tool_arguments)),
+                run_id,
+            )
+
+        async def scroll() -> Any:
+            return await execute_tool("scroll", {"direction": "down"}, run_id)
+
+        async def observe() -> Any:
+            observed = await execute_tool("read_screen_text", {}, run_id)
+            self._remember_screen_output(mission, getattr(observed, "output", None))
+            return observed
+
+        return await search_visible_area(
+            resolve=resolve,
+            scroll=scroll,
+            observe=observe,
+            guard_allows=lambda name, args: guard.check_action(name, args).allowed,
+            record_action=lambda name, args, ok: guard.record_action(
+                name, args, made_progress=ok
+            ),
+            initial=result,
+        )
 
     async def _observe_via_tool(
         self, tool_name: str, arguments: dict[str, Any], run_id: str

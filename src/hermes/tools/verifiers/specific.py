@@ -8,6 +8,9 @@ from urllib.parse import urlparse
 from hermes.tools.verifiers.base import BaseVerifier, Observation, VerificationResult, VerificationStatus
 from hermes.tools.verifiers.context import VerifierContext
 from hermes.tools.windows.file_tools import resolve_user_path
+from hermes.utils.logging import get_logger
+
+_logger = get_logger(__name__)
 
 
 def _resolve_folder_path(raw: str) -> Path:
@@ -285,6 +288,172 @@ class GetSystemInfoVerifier(BaseVerifier):
             status=VerificationStatus.FAILED,
             method="get_system_info_output",
             details={"reason": "output_missing"},
+            observation=observation,
+        )
+
+
+class ReadFileVerifier(BaseVerifier):
+    tool_names = ("read_file",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        raw = str(
+            ctx.tool_arguments.get("path")
+            or ctx.tool_arguments.get("file")
+            or ""
+        ).strip()
+        if isinstance(ctx.execution_output, dict):
+            actual = str(ctx.execution_output.get("path") or "").strip()
+            if actual:
+                raw = actual
+        if not raw:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="read_file_filesystem",
+                details={"reason": "path_missing"},
+            )
+        try:
+            target = resolve_user_path(raw)
+        except Exception as exc:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="read_file_filesystem",
+                details={"reason": "path_unresolved", "error": str(exc)},
+            )
+        observation = Observation(
+            source="filesystem",
+            data={"path": str(target), "exists": target.exists(), "is_file": target.is_file()},
+        )
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="read_file_filesystem",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+                observation=observation,
+            )
+        if target.is_file():
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="read_file_filesystem",
+                details={"path": str(target), "size": target.stat().st_size},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            method="read_file_filesystem",
+            details={"reason": "not_a_file", "path": str(target)},
+            observation=observation,
+        )
+
+
+class OpenPathVerifier(BaseVerifier):
+    tool_names = ("open_path",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        raw = str(ctx.tool_arguments.get("path") or ctx.tool_arguments.get("target") or "").strip()
+        if isinstance(ctx.execution_output, dict):
+            actual = str(ctx.execution_output.get("path") or "").strip()
+            if actual:
+                raw = actual
+        if not raw:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="open_path_filesystem",
+                details={"reason": "path_missing"},
+            )
+        try:
+            target = Path(raw).expanduser()
+            if not target.is_absolute():
+                target = Path.home() / "Desktop" / target
+            target = target.resolve()
+        except Exception as exc:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="open_path_filesystem",
+                details={"reason": "path_unresolved", "error": str(exc)},
+            )
+        exists = target.exists()
+        observation = Observation(
+            source="filesystem",
+            data={"path": str(target), "exists": exists, "is_dir": target.is_dir()},
+        )
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="open_path_filesystem",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+                observation=observation,
+            )
+        if exists:
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="open_path_filesystem",
+                details={"path": str(target)},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            method="open_path_filesystem",
+            details={"reason": "path_missing_on_disk", "path": str(target)},
+            observation=observation,
+        )
+
+
+class OpenAppVerifier(BaseVerifier):
+    tool_names = ("open_app",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        raw_path = str(output.get("path") or "").strip()
+        app = str(ctx.tool_arguments.get("app") or output.get("app") or "").strip()
+        binary = Path(raw_path) if raw_path else None
+        if binary is None or not binary.is_file():
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="open_app_process",
+                details={"reason": "app_binary_missing", "app": app, "path": raw_path},
+            )
+        observation = Observation(
+            source="process",
+            data={"app": app, "path": str(binary), "pid": output.get("pid")},
+        )
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="open_app_process",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+                observation=observation,
+            )
+        pid = output.get("pid")
+        if pid not in (None, ""):
+            try:
+                import psutil
+
+                if psutil.pid_exists(int(pid)):
+                    return VerificationResult(
+                        status=VerificationStatus.VERIFIED,
+                        method="open_app_process",
+                        details={"pid": int(pid), "path": str(binary)},
+                        observation=observation,
+                    )
+            except (TypeError, ValueError, ImportError):
+                pass
+        try:
+            from hermes.tools.windows.input_backend import find_app_window_title
+
+            title = find_app_window_title(app) if app else None
+        except Exception:
+            title = None
+        if title:
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="open_app_window",
+                details={"window_title": title, "path": str(binary)},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.UNKNOWN,
+            method="open_app_process",
+            details={"reason": "process_unconfirmed", "path": str(binary)},
             observation=observation,
         )
 
@@ -680,4 +849,184 @@ class CopyFileVerifier(BaseVerifier):
             method="copy_file_filesystem",
             details={"destination": str(dest_path), "size": dest_path.stat().st_size},
             observation=observation,
+        )
+
+
+async def _observe_screen_state(ctx: VerifierContext) -> tuple[VerificationResult | None, dict[str, Any]]:
+    if ctx.observe_tool is None:
+        return None, {}
+    observed = await ctx.observe_tool("read_screen_text", {}, ctx.run_id)
+    if observed is None or not observed.success or not isinstance(observed.output, dict):
+        return (
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_post_action_observe",
+                details={"reason": "observe_failed", "error": getattr(observed, "error", None)},
+            ),
+            {},
+        )
+    from hermes.screen.observe import attach_screen_state
+
+    payload = attach_screen_state(observed.output)
+    observation = Observation(source="read_screen_text", data={"state_id": payload.get("state_id")})
+    return None, {"payload": payload, "observation": observation}
+
+
+class ResolveScreenEntityVerifier(BaseVerifier):
+    tool_names = ("resolve_screen_entity",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        observation = Observation(source="execution_output", data=dict(output))
+        if output.get("needs_user"):
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_resolve",
+                details={"reason": "ambiguous", "clarification": output.get("clarification")},
+                observation=observation,
+            )
+        if not ctx.execution_success or not output.get("found"):
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_resolve",
+                details={"reason": "not_found", "error": ctx.execution_error},
+                observation=observation,
+            )
+        if output.get("x") is None or output.get("y") is None:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_resolve",
+                details={"reason": "coordinates_missing"},
+                observation=observation,
+            )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="screen_resolve",
+            details={"entity_id": output.get("entity_id"), "x": output.get("x"), "y": output.get("y")},
+            observation=observation,
+        )
+
+
+class ClickScreenVerifier(BaseVerifier):
+    tool_names = ("click",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_click_observe",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        pre_state = None
+        try:
+            from hermes.screen.store import last_screen_state
+
+            pre_state = last_screen_state()
+        except Exception:
+            pre_state = None
+        failed, data = await _observe_screen_state(ctx)
+        if failed is not None:
+            return failed
+        if not data:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="screen_click_observe",
+                details={"reason": "observe_unavailable"},
+            )
+        args = ctx.tool_arguments if isinstance(ctx.tool_arguments, dict) else {}
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        payload = data["payload"]
+        window = payload.get("window") if isinstance(payload.get("window"), dict) else {}
+        expected_text = str(args.get("text") or output.get("text") or "").strip()
+        expected_id = str(args.get("entity_id") or output.get("entity_id") or "").strip()
+        expected_ref = str(args.get("reference") or "").strip()
+        post_text = str(payload.get("text") or "")
+        post_title = str(
+            payload.get("window_title")
+            or payload.get("title")
+            or window.get("title")
+            or ""
+        )
+        post_url = str(payload.get("url") or window.get("url") or "")
+        pre_window = pre_state.window if pre_state is not None else {}
+        pre_state_id = str(
+            args.get("state_id")
+            or output.get("state_id")
+            or (pre_state.state_id if pre_state is not None else "")
+            or ""
+        )
+        pre_title = str((pre_window or {}).get("title") or "")
+        pre_url = str((pre_window or {}).get("url") or "")
+        pre_text = str(pre_state.text if pre_state is not None else "")
+        ocr_changed = bool(pre_text) and pre_text.casefold() != post_text.casefold()
+        destination_changed = bool(pre_title or pre_url) and (
+            pre_title.casefold() != post_title.casefold()
+            or pre_url.casefold() != post_url.casefold()
+        )
+        evidence = {
+            "click_x": args.get("x", output.get("x")),
+            "click_y": args.get("y", output.get("y")),
+            "entity_id": expected_id,
+            "expected_text": expected_text,
+            "bbox": args.get("bbox") or output.get("bbox"),
+            "pre_state_id": pre_state_id,
+            "post_state_id": payload.get("state_id"),
+            "pre_page_title": pre_title,
+            "page_title": post_title,
+            "pre_url": pre_url,
+            "url": post_url,
+            "ocr_changed": ocr_changed,
+            "destination_changed": destination_changed,
+            "reference": expected_ref,
+            "post_click_text": post_text[:500],
+        }
+        target = expected_text.casefold()
+        title_url = f"{post_title} {post_url}".casefold()
+        if target and target in title_url:
+            status = VerificationStatus.VERIFIED
+            reason = "target_in_title_or_url"
+        elif target and destination_changed and (post_title or post_url) and target not in title_url:
+            status = VerificationStatus.FAILED
+            reason = "wrong_target_opened"
+        else:
+            status = VerificationStatus.UNKNOWN
+            reason = "target_unproven"
+        _logger.info(
+            "screen_click_verify",
+            status=status.value,
+            reason=reason,
+            **{key: value for key, value in evidence.items() if key != "post_click_text"},
+        )
+        return VerificationResult(
+            status=status,
+            method="screen_click_observe",
+            details={"reason": reason, **evidence, "verified_output": payload},
+            observation=data["observation"],
+        )
+
+
+class ScrollScreenVerifier(BaseVerifier):
+    tool_names = ("scroll",)
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="screen_scroll_observe",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+        failed, data = await _observe_screen_state(ctx)
+        if failed is not None:
+            return failed
+        if not data:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                method="screen_scroll_observe",
+                details={"reason": "observe_unavailable"},
+            )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            method="screen_scroll_observe",
+            details={"state_id": data["payload"].get("state_id"), "verified_output": data["payload"]},
+            observation=data["observation"],
         )

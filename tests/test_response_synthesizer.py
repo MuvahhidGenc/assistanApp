@@ -138,6 +138,31 @@ def test_verification_failure_not_success():
     assert "olusturdum" not in line.casefold()
 
 
+def test_incomplete_outcome_is_never_spoken_as_success():
+    for outcome, text in (
+        ("failed", "Gorev tamamlandi."),
+        ("partial", "Gorev tamamlandi."),
+        ("waiting", "Tamam, bitti."),
+        ("question", "Gorev tamamlandi."),
+        ("unsupported", "Gorev tamamlandi."),
+        (None, "Mission kismen tamamlandi:\n- arama yapildi"),
+        (None, "Gorev kismen tamamlandi; zorunlu bir adim gerceklesmedi."),
+    ):
+        line = synthesize_task_completed("dosyayi ac", text, outcome=outcome)
+        spoken = (line or "").casefold()
+        assert "tamam, bitti" not in spoken
+        assert "tamam, hallettim" not in spoken
+
+
+def test_completed_outcome_may_use_success_phrase():
+    line = synthesize_task_completed(
+        "isi bitir",
+        "Gorev tamamlandi. Dosya acildi.",
+        outcome="completed",
+    )
+    assert line == "Tamam, bitti."
+
+
 def test_ambiguous_reference_spoken():
     line = synthesize_task_completed(
         "dosyayi ac",

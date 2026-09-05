@@ -97,7 +97,58 @@ async def test_create_folder_is_verified_against_the_filesystem(executor, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_tools_without_a_dedicated_verifier_are_left_alone(executor):
+async def test_a_lying_open_path_is_caught_outside_a_mission(executor, tmp_path):
+    missing = tmp_path / "ghost_folder"
+    tool = executor._registry.get("open_path")
+    tool.execute = AsyncMock(
+        return_value=ToolExecutionResult(
+            success=True, output={"path": str(missing), "verified": True}
+        )
+    )
+
+    result = await executor.execute_tool_call(_call("open_path", path=str(missing)))
+
+    assert result.success is False
+    assert result.verification_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_lying_read_file_is_caught_outside_a_mission(executor, tmp_path):
+    missing = tmp_path / "ghost.txt"
+    tool = executor._registry.get("read_file")
+    tool.execute = AsyncMock(
+        return_value=ToolExecutionResult(
+            success=True,
+            output={"path": str(missing), "content": "forged", "exists": True},
+        )
+    )
+
+    result = await executor.execute_tool_call(_call("read_file", path=str(missing)))
+
+    assert result.success is False
+    assert result.verification_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_lying_open_app_is_caught_outside_a_mission(executor, tmp_path):
+    missing = tmp_path / "chrome.exe"
+    tool = executor._registry.get("open_app")
+    tool.execute = AsyncMock(
+        return_value=ToolExecutionResult(
+            success=True,
+            output={
+                "app": "chrome",
+                "path": str(missing),
+                "verified": True,
+                "window_title": "Chrome",
+            },
+        )
+    )
+
+    result = await executor.execute_tool_call(_call("open_app", app="chrome"))
+
+    assert result.success is False
+    assert result.verification_status == "failed"
     """The generic verifier only restates tool output, so it is not run here."""
     tool = executor._registry.get("echo")
     tool.execute = AsyncMock(return_value=ToolExecutionResult(success=True, output="pong"))

@@ -221,7 +221,7 @@ async def test_create_folder_context_after_execution(settings: AppSettings, tmp_
     server = MagicMock()
     orchestrator = AgentOrchestrator(settings, server)
 
-    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message=""):
+    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message="", verify=True):
         if command["name"] == "create_folder":
             Path(str(command["arguments"]["path"])).mkdir(parents=True, exist_ok=True)
             return ToolResultPayload(

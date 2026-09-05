@@ -237,6 +237,16 @@ class ClickTool(BaseTool):
     ) -> ToolExecutionResult:
         try:
             data = await run_in_thread(click_at, int(x), int(y), button=button, clicks=clicks)
+            entity_id = kwargs.get("entity_id")
+            text = kwargs.get("text")
+            if entity_id:
+                data["entity_id"] = entity_id
+            if text:
+                data["text"] = text
+            if kwargs.get("bbox") is not None:
+                data["bbox"] = kwargs.get("bbox")
+            if kwargs.get("state_id"):
+                data["state_id"] = kwargs.get("state_id")
             return ToolExecutionResult(success=True, output=data, verified=True)
         except Exception as exc:
             return ToolExecutionResult(success=False, error=str(exc))
@@ -249,6 +259,9 @@ class ClickTool(BaseTool):
                 "y": {"type": "integer"},
                 "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left"},
                 "clicks": {"type": "integer", "default": 1},
+                "entity_id": {"type": "string"},
+                "text": {"type": "string"},
+                "bbox": {"type": "object"},
             },
             "required": ["x", "y"],
         }

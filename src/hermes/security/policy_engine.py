@@ -70,6 +70,7 @@ READ_ONLY_TOOLS = frozenset(
         "list_windows",
         "get_clipboard",
         "read_screen_text",
+        "resolve_screen_entity",
         "list_directory",
     }
 )

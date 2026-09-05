@@ -329,6 +329,9 @@ class ReadScreenTextTool(BaseTool):
                     data["title_hint"] = title_hint
                 has_text = bool(str(data.get("text") or "").strip()) or bool(data.get("lines"))
                 data["content_type"] = "screen_text" if has_text else "browser_window"
+                from hermes.screen.observe import attach_screen_state
+
+                data = attach_screen_state(data)
             return ToolExecutionResult(success=True, output=data, verified=True)
         except Exception as exc:
             return ToolExecutionResult(success=False, error=str(exc))

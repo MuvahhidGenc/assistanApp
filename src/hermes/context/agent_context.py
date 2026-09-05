@@ -311,6 +311,7 @@ def promote_file_in_context(ctx: ConversationalContext, file_path: str) -> None:
     ctx.last_verified_folder = parent
     ctx.recent_files = _dedupe_prepend(ctx.recent_files, verified)
     ctx.created_files = _dedupe_prepend(ctx.created_files, verified)
+    ctx.commit_focus("file", verified, container=parent, source="promote")
     ctx.touch()
 
 
@@ -325,6 +326,7 @@ def promote_folder_in_context(ctx: ConversationalContext, folder_path: str) -> N
     ctx.active_folder = resolved
     ctx.last_created_folder = resolved
     ctx.recent_folders = _dedupe_prepend(ctx.recent_folders, resolved)
+    ctx.commit_focus("folder", resolved, container=resolved, source="promote")
     ctx.touch()
 
 

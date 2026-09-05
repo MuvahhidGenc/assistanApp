@@ -7,13 +7,19 @@ from hermes.tools.verifiers.base import BaseVerifier, VerificationResult, Verifi
 from hermes.tools.verifiers.context import VerifierContext
 from hermes.tools.verifiers.generic import GenericVerifier
 from hermes.tools.verifiers.specific import (
+    ClickScreenVerifier,
     CopyFileVerifier,
     CreateFolderVerifier,
     GetSystemInfoVerifier,
     GitCloneVerifier,
     InstallProgramVerifier,
+    OpenAppVerifier,
+    OpenPathVerifier,
     OpenUrlVerifier,
+    ReadFileVerifier,
     ReadScreenTextVerifier,
+    ResolveScreenEntityVerifier,
+    ScrollScreenVerifier,
     SearchFilesVerifier,
     SetDnsVerifier,
     WriteFileVerifier,
@@ -62,11 +68,6 @@ class VerifierRegistry:
                 details={"reason": "verification_timeout", "timeout_seconds": timeout},
             )
 
-        if result.status != VerificationStatus.UNKNOWN:
-            return result
-        generic = await asyncio.wait_for(self._generic.verify(ctx), timeout=timeout)
-        if generic.status == VerificationStatus.UNKNOWN:
-            return generic
         return result
 
 
@@ -81,8 +82,14 @@ def create_default_verifier_registry() -> VerifierRegistry:
         SetDnsVerifier(),
         OpenUrlVerifier(),
         ReadScreenTextVerifier(),
+        ResolveScreenEntityVerifier(),
+        ClickScreenVerifier(),
+        ScrollScreenVerifier(),
         SearchFilesVerifier(),
         CopyFileVerifier(),
+        ReadFileVerifier(),
+        OpenPathVerifier(),
+        OpenAppVerifier(),
     ):
         registry.register(verifier)
     return registry

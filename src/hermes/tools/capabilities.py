@@ -49,6 +49,7 @@ class Capability(StrEnum):
 
     SCREEN_OBSERVE = "screen.observe"
     SCREEN_READ = "screen.read"
+    SCREEN_RESOLVE = "screen.resolve"
     SCREEN_CLICK = "screen.click"
     SCREEN_TYPE = "screen.type"
     SCREEN_SCROLL = "screen.scroll"
@@ -96,6 +97,7 @@ _TOOL_CAPABILITIES: dict[str, tuple[Capability, ...]] = {
     "move_mouse": (Capability.MOUSE_CONTROL,),
     "scroll": (Capability.SCREEN_SCROLL,),
     "click_text": (Capability.SCREEN_CLICK, Capability.BROWSER_CLICK),
+    "resolve_screen_entity": (Capability.SCREEN_RESOLVE,),
     "show_desktop": (Capability.WINDOW_MANAGE,),
     "browser_nav": (Capability.BROWSER_NAVIGATE,),
     # pc_actions
@@ -284,6 +286,7 @@ def select_tool_for_capability(
     best: CapabilitySelection | None = None
     best_coverage = -1
     best_arity = 10**9
+    best_cap_count = -1
 
     for definition in registry.find_by_capability(capability):
         if definition.name in exclude:
@@ -317,12 +320,148 @@ def select_tool_for_capability(
         if coverage == 0 and payload and (schema.get("properties") or {}):
             continue
         arity = len(properties)
+        cap_count = len(definition.capabilities)
         if coverage > best_coverage or (
-            coverage == best_coverage and arity < best_arity
+            coverage == best_coverage
+            and (
+                arity < best_arity
+                or (arity == best_arity and cap_count > best_cap_count)
+            )
         ):
             best_coverage = coverage
             best_arity = arity
+            best_cap_count = cap_count
             best = CapabilitySelection(
                 capability=str(capability), tool_name=definition.name, arguments=fitted
             )
     return best
+
+
+# Structured fields a successful capability execution can expose. Used to bind
+# a later step's required input without naming tools or writing per-pair ifs.
+CAPABILITY_OUTPUT_FIELDS: dict[str, tuple[str, ...]] = {
+    "filesystem.search": ("path",),
+    "filesystem.list": ("path",),
+    "filesystem.read": ("path", "content"),
+    "filesystem.write": ("path",),
+    "filesystem.copy": ("path", "destination"),
+    "filesystem.move": ("path",),
+    "filesystem.rename": ("path",),
+    "filesystem.open": ("path",),
+    "filesystem.inspect": ("path",),
+    "document.create": ("path",),
+    "document.write": ("path",),
+    "document.read": ("path", "content"),
+    "browser.navigate": ("url",),
+    "browser.open": ("url",),
+    "application.open": ("app", "path"),
+    "screen.observe": ("screen_state", "entities", "text"),
+    "screen.read": ("text", "title"),
+    "screen.resolve": ("x", "y", "entity_id", "text", "bbox", "state_id"),
+    "web.download": ("path",),
+    "code.clone": ("path",),
+}
+
+
+def extract_structured_value(output: Any, field: str) -> Any:
+    """Pull a conventional field out of a tool/verifier payload.
+
+    Understands nested search matches and verified_output wrappers. Does not
+    invent a value when the field is absent.
+    """
+    if not field:
+        return None
+    if isinstance(output, list) and field == "path" and output:
+        first = output[0]
+        if isinstance(first, dict):
+            return extract_structured_value(first, "path")
+        text = str(first).strip()
+        return text or None
+    if not isinstance(output, dict):
+        return None
+
+    nested = output.get("verified_output")
+    if isinstance(nested, dict):
+        nested_value = extract_structured_value(nested, field)
+        if nested_value not in (None, "", []):
+            return nested_value
+
+    direct = output.get(field)
+    if isinstance(direct, list) and direct:
+        return extract_structured_value(direct, field)
+    if direct not in (None, "", []):
+        return direct
+
+    if field == "path":
+        for key in ("matched_files", "matches", "files"):
+            if key not in output:
+                continue
+            items = output.get(key)
+            if isinstance(items, list) and items:
+                return extract_structured_value(items, "path")
+            # Search ran and produced no files. Do not bind the folder instead.
+            return None
+        for key in ("destination", "source"):
+            value = output.get(key)
+            if value not in (None, ""):
+                return value
+    if field == "url":
+        for key in ("opened_url", "last_url", "last_browser_url"):
+            value = output.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def input_names_for_capability(registry: ToolRegistry, capability: str) -> set[str]:
+    names: set[str] = set()
+    for definition in registry.find_by_capability(capability):
+        tool = registry.get(definition.name)
+        if tool is None:
+            continue
+        schema = tool.get_parameters_schema()
+        names.update(str(item) for item in (schema.get("required") or []))
+        names.update(str(key) for key in (schema.get("properties") or {}))
+    return names
+
+
+def produced_fields(capability: str) -> tuple[str, ...]:
+    return CAPABILITY_OUTPUT_FIELDS.get(str(capability), ())
+
+
+def bindable_fields(
+    producer_capability: str,
+    consumer_capability: str,
+    registry: ToolRegistry,
+) -> tuple[str, ...]:
+    """Every conventional field the producer exposes that the consumer accepts."""
+    accepted = input_names_for_capability(registry, consumer_capability)
+    return tuple(
+        field for field in produced_fields(producer_capability) if field in accepted
+    )
+
+
+def bindable_field(
+    producer_capability: str,
+    consumer_capability: str,
+    registry: ToolRegistry,
+) -> str | None:
+    """A conventional field the producer exposes that the consumer accepts."""
+    fields = bindable_fields(producer_capability, consumer_capability, registry)
+    return fields[0] if fields else None
+
+
+def select_tool_accepting(
+    registry: ToolRegistry,
+    capability: str,
+    field: str,
+) -> str | None:
+    """Lowest-risk tool for `capability` that declares `field` as an input."""
+    for definition in registry.find_by_capability(capability):
+        tool = registry.get(definition.name)
+        if tool is None:
+            continue
+        properties = (tool.get_parameters_schema().get("properties") or {})
+        if field in properties:
+            return definition.name
+    return None

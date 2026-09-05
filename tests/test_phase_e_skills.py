@@ -281,13 +281,24 @@ def test_context_is_readable_from_a_skill(tmp_path):
 # --- verification through observation ----------------------------------
 
 
+def _open_app_output(tmp_path: Path, *, app: str = "Word") -> ToolExecutionResult:
+    binary = tmp_path / "winword.exe"
+    binary.write_bytes(b"mz")
+    import os
+
+    return ToolExecutionResult(
+        success=True,
+        output={"app": app, "path": str(binary), "pid": os.getpid()},
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_step_can_be_judged_by_re_reading_the_world(
     registry, tool_executor, tmp_path
 ):
     """"App opened" is decided by what windows exist, not by the launcher."""
     registry.get("open_app").execute = AsyncMock(
-        return_value=ToolExecutionResult(success=True, output={"app": "Word"})
+        return_value=_open_app_output(tmp_path)
     )
     registry.get("list_windows").execute = AsyncMock(
         return_value=ToolExecutionResult(success=True, output="Belge1 - Word")
@@ -314,10 +325,10 @@ async def test_a_step_can_be_judged_by_re_reading_the_world(
 
 @pytest.mark.asyncio
 async def test_observation_that_disagrees_fails_the_step(
-    registry, tool_executor
+    registry, tool_executor, tmp_path
 ):
     registry.get("open_app").execute = AsyncMock(
-        return_value=ToolExecutionResult(success=True, output={"app": "Word"})
+        return_value=_open_app_output(tmp_path)
     )
     registry.get("list_windows").execute = AsyncMock(
         return_value=ToolExecutionResult(success=True, output="Sadece masaustu")

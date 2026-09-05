@@ -11,6 +11,7 @@ from hermes.context.agent_context import (
     normalize_existing_path,
     path_exists,
     promote_file_in_context,
+    promote_folder_in_context,
 )
 from hermes.context.conversational_context import ConversationalContext
 
@@ -54,6 +55,7 @@ class CorrectionResult:
     response: str = ""
     repeat_message: str = ""
     corrected_path: str | None = None
+    invalidate_path: str | None = None
 
 
 def is_user_correction_message(text: str) -> bool:
@@ -79,8 +81,107 @@ def is_user_correction_message(text: str) -> bool:
     return False
 
 
+_REDIRECT = re.compile(
+    r"hay[ıi]r|yanl[iı][şs]|de[gğ]il|olmal[ıi]yd[ıi]|olu[sş]turmal[ıi]",
+    re.IGNORECASE,
+)
+
+
+def _compact_token(value: str) -> str:
+    return re.sub(r"\s+", "", value or "").casefold()
+
+
+def _mentioned_known_folder(text: str, ctx: ConversationalContext) -> str | None:
+    compact_text = _compact_token(text)
+    candidates: list[str] = []
+    for path in (
+        ctx.last_created_folder,
+        ctx.active_folder,
+        ctx.focus_container(),
+        *(ctx.recent_folders or []),
+    ):
+        if path and path not in candidates:
+            candidates.append(path)
+    for path in candidates:
+        name = Path(str(path)).name
+        if name and _compact_token(name) and _compact_token(name) in compact_text:
+            existing = find_folder_by_hint(ctx, name) or normalize_existing_path(path)
+            if existing:
+                return existing
+    from hermes.context.folder_reference import extract_named_folder_name
+
+    named = extract_named_folder_name(text)
+    if named:
+        return find_folder_by_hint(ctx, named) or find_folder_by_hint(ctx, _compact_token(named))
+    return None
+
+
+def _original_goal(ctx: ConversationalContext) -> str:
+    if ctx.current_objective:
+        return str(ctx.current_objective)
+    if isinstance(ctx.last_intent, dict) and ctx.last_intent.get("goal"):
+        return str(ctx.last_intent.get("goal") or "")
+    return ""
+
+
+def _current_file_target(ctx: ConversationalContext) -> str | None:
+    focus = ctx.active_focus
+    if focus is not None and focus.type == "file":
+        return focus.identifier
+    return ctx.active_file
+
+
+def _resolve_create_target_correction(text: str, ctx: ConversationalContext) -> CorrectionResult:
+    from hermes.context.conversational_context import message_wants_container
+    from hermes.context.folder_reference import message_uses_contextual_folder
+
+    folder = _mentioned_known_folder(text, ctx)
+    if not folder:
+        return CorrectionResult()
+    original = _original_goal(ctx)
+    current_file = _current_file_target(ctx)
+    wants_inside = message_uses_contextual_folder(text) or message_wants_container(text)
+    redirects = bool(_REDIRECT.search(text))
+    has_goal = bool(original or ctx.last_intent or ctx.active_mission_id)
+    if not has_goal or not wants_inside:
+        return CorrectionResult()
+
+    wrong_parent = False
+    if current_file:
+        try:
+            wrong_parent = Path(current_file).parent.resolve() != Path(folder).resolve()
+        except OSError:
+            wrong_parent = True
+    if not (redirects or wrong_parent):
+        return CorrectionResult()
+
+    invalidate_path = current_file if current_file and wrong_parent else None
+    if invalidate_path:
+        ctx.invalidate_target(invalidate_path)
+    promote_folder_in_context(ctx, folder)
+    ctx.save()
+    name = Path(folder).name
+    if original and original.strip().casefold() != text.strip().casefold():
+        return CorrectionResult(
+            handled=True,
+            response=f"Tamam, {name} klasorune gorevi yeniden planliyorum.",
+            repeat_message=original,
+            corrected_path=folder,
+            invalidate_path=invalidate_path,
+        )
+    return CorrectionResult(
+        handled=True,
+        response=f"Tamam, hedefi {name} klasoru olarak guncelledim.",
+        corrected_path=folder,
+        invalidate_path=invalidate_path,
+    )
+
+
 def resolve_user_correction(text: str, ctx: ConversationalContext) -> CorrectionResult:
     normalized = (text or "").strip()
+    retarget = _resolve_create_target_correction(normalized, ctx)
+    if retarget.handled:
+        return retarget
     if not is_user_correction_message(normalized):
         return CorrectionResult()
 

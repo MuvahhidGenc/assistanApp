@@ -105,7 +105,7 @@ async def test_orchestrator_chrome_open_no_server(registry, settings: AppSetting
 
     orchestrator._on_status = capture_status
 
-    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message=""):
+    async def fake_pc_process(self, command, run_id="", skip_approval=False, *, user_message="", verify=True):
         assert command["name"] == "open_app"
         return ToolResultPayload(
             tool_call_id="1",

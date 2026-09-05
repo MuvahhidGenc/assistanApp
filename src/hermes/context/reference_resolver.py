@@ -294,6 +294,10 @@ class ReferenceResolver:
         from hermes.context.agent_context import extract_icine_write_content, resolve_context_file
 
         icine_content = extract_icine_write_content(text)
+        from hermes.context.folder_reference import is_file_create_message
+
+        if icine_content and is_file_create_message(text):
+            return ResolutionResult()
         if icine_content and not re.search(r"\b(olustur|oluştur|yarat|create)\b", lower):
             resolved = resolve_context_file(text, ctx, prefer_modified=True, allow_stem=True)
             if resolved:
@@ -756,7 +760,7 @@ class ReferenceResolver:
                 is_new_task=False,
             )
 
-        folder = ctx.active_folder or ctx.last_created_folder
+        folder = ctx.focus_container() or ctx.active_folder or ctx.last_created_folder
         if folder and (
             any(pattern.search(text) for pattern in _FOLDER_REF_PATTERNS)
             or re.search(r"\bbu\s+klas", lower)
@@ -816,10 +820,12 @@ class ReferenceResolver:
 
         target = resolve_file_create_target(
             text,
-            active_folder=ctx.active_folder,
+            active_folder=ctx.focus_container() or ctx.active_folder,
             last_created_folder=ctx.last_created_folder,
         )
         if target is None:
+            if re.search(r"\b(word|docx|\.docx)\b", lower):
+                return ResolutionResult()
             if extract_named_folder_name(text) or message_uses_contextual_folder(text):
                 return ResolutionResult(
                     ambiguous=True,
@@ -873,7 +879,7 @@ class ReferenceResolver:
         if not re.search(r"\b(olustur|oluştur|yaz|create)\b", lower):
             return ResolutionResult()
 
-        folder = ctx.active_folder or ctx.last_created_folder
+        folder = ctx.focus_container() or ctx.active_folder or ctx.last_created_folder
         if not folder:
             return ResolutionResult(
                 ambiguous=True,

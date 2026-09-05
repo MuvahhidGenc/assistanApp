@@ -60,6 +60,33 @@ def test_goal_finalize_completed_when_verified():
     assert result.goal_achieved
 
 
+def test_missing_required_capability_is_not_completed():
+    mission = Mission(
+        mission_id="m-search-open",
+        user_goal="bul ve ac",
+        status=MissionStatus.RUNNING,
+    )
+    mission.working_context["required_capabilities"] = [
+        "filesystem.search",
+        "filesystem.open",
+    ]
+    mission.steps = [
+        MissionStep(
+            step_id="search",
+            title="search",
+            status=MissionStepStatus.COMPLETED,
+            action=StepAction.TOOL,
+            tool_name="search_files",
+            verification_status="verified",
+            metadata={"capability": "filesystem.search"},
+        )
+    ]
+    result = finalize_mission_goal(mission, all_steps_done=True)
+    assert result.status == "partial"
+    assert result.goal_achieved is False
+    assert result.state_verified is False
+
+
 def test_filesystem_snapshot_and_compare(tmp_path):
     before_dir = tmp_path / "Desktop"
     before_dir.mkdir()

@@ -67,24 +67,58 @@ class ToolIntentResult:
 
 
 def _pick_file(ctx: ConversationalContext, refs: dict[str, str]) -> str | None:
-    for key in ("target_file", "active_file", "last_created_file", "last_modified_file"):
-        value = refs.get(key) or getattr(ctx, key, None)
-        if value and Path(str(value)).exists():
-            return str(Path(str(value)).resolve())
+    def _ok(path: str | None) -> str | None:
+        if not path or ctx.is_invalidated(path):
+            return None
+        try:
+            target = Path(str(path))
+            return str(target.resolve()) if target.exists() else None
+        except OSError:
+            return None
+
+    explicit = _ok(refs.get("target_file"))
+    if explicit:
+        return explicit
+    focus = ctx.active_focus
+    if focus is not None and focus.type == "file":
+        chosen = _ok(focus.identifier)
+        if chosen:
+            return chosen
+    for key in ("active_file", "last_created_file", "last_modified_file"):
+        chosen = _ok(refs.get(key) or getattr(ctx, key, None))
+        if chosen:
+            return chosen
     for path in ctx.recent_files:
-        if Path(path).exists():
-            return str(Path(path).resolve())
+        chosen = _ok(path)
+        if chosen:
+            return chosen
     return None
 
 
 def _pick_folder(ctx: ConversationalContext, refs: dict[str, str]) -> str | None:
-    for key in ("target_folder", "active_folder", "last_created_folder"):
-        value = refs.get(key) or getattr(ctx, key, None)
-        if value and Path(str(value)).exists():
-            return str(Path(str(value)).resolve())
+    def _ok(path: str | None) -> str | None:
+        if not path or ctx.is_invalidated(path):
+            return None
+        try:
+            target = Path(str(path))
+            return str(target.resolve()) if target.is_dir() else None
+        except OSError:
+            return None
+
+    explicit = _ok(refs.get("target_folder"))
+    if explicit:
+        return explicit
+    chosen = _ok(ctx.focus_container())
+    if chosen:
+        return chosen
+    for key in ("active_folder", "last_created_folder"):
+        chosen = _ok(refs.get(key) or getattr(ctx, key, None))
+        if chosen:
+            return chosen
     for path in ctx.recent_folders:
-        if Path(path).exists():
-            return str(Path(path).resolve())
+        chosen = _ok(path)
+        if chosen:
+            return chosen
     return None
 
 

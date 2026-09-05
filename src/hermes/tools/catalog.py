@@ -77,6 +77,7 @@ _IDEMPOTENCY: dict[str, IdempotencyKind] = {
     "list_directory": IdempotencyKind.SAFE_REPEAT,
     "search_files": IdempotencyKind.SAFE_REPEAT,
     "read_screen_text": IdempotencyKind.SAFE_REPEAT,
+    "resolve_screen_entity": IdempotencyKind.SAFE_REPEAT,
     "screenshot": IdempotencyKind.SAFE_REPEAT,
 }
 

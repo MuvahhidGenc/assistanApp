@@ -334,7 +334,16 @@ class VoiceAssistant:
                     )
 
                     tool_results = list(getattr(self.agent.state, "last_tool_results", []) or [])
-                    complete_line = synthesize_task_completed(text, response.strip(), tool_results)
+                    metadata = getattr(self.agent.state, "metadata", None)
+                    raw_outcome = (
+                        metadata.get("turn_outcome") if isinstance(metadata, dict) else None
+                    )
+                    complete_line = synthesize_task_completed(
+                        text,
+                        response.strip(),
+                        tool_results,
+                        outcome=str(raw_outcome) if raw_outcome else None,
+                    )
                     tts_pipeline._audit(
                         "SYNTHESIZER_CALLED",
                         phase="completed",

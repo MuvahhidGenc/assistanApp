@@ -230,6 +230,7 @@ class AgentOrchestrator:
                 text = f"{self.state.session_notice}\n\n{text}"
             append_conversation_turn("user", message)
             append_conversation_turn("assistant", text)
+            self.state.metadata["turn_outcome"] = "waiting"
             await self._set_status(
                 AgentPhase.AWAITING_APPROVAL,
                 "Devam etmek icin yanitini bekliyorum.",
@@ -278,6 +279,9 @@ class AgentOrchestrator:
             append_conversation_turn("user", message)
             append_conversation_turn("assistant", text)
             phase = AgentPhase.COMPLETED if engine_result.success else AgentPhase.FAILED
+            self.state.metadata["turn_outcome"] = (
+                "completed" if engine_result.success else "failed"
+            )
             await self._set_status(
                 phase,
                 format_completed_status() if engine_result.success else "Gorev tamamlanamadi.",
@@ -327,6 +331,21 @@ class AgentOrchestrator:
             conv_ctx.suspended_mission_ids = [active.mission_id, *conv_ctx.suspended_mission_ids[:9]]
         conv_ctx.save()
 
+    def _release_waiting_mission(self, mission_id: str, conv_ctx: Any, message: str) -> None:
+        """A new goal must not keep answering an old WAITING clarification."""
+        from hermes.mission.audit import MissionAuditor
+
+        self._mission_store.snapshot_context(mission_id, conv_ctx.snapshot_for_mission())
+        self._mission_store.suspend_mission(mission_id, reason="Yeni gorev; bekleyen netlestirme birakildi")
+        MissionAuditor(mission_id).mission_suspended(reason="new_task_replaces_waiting")
+        MissionAuditor(mission_id).user_interrupted(new_goal=message)
+        if conv_ctx.active_mission_id == mission_id:
+            conv_ctx.active_mission_id = None
+            conv_ctx.active_step_id = None
+        if mission_id not in conv_ctx.suspended_mission_ids:
+            conv_ctx.suspended_mission_ids = [mission_id, *conv_ctx.suspended_mission_ids[:9]]
+        conv_ctx.save()
+
     async def _run_mission_engine(self, mission_id: str) -> Any:
         from hermes.mission.engine import EngineResult, MissionEngine
         from hermes.mission.planner import MissionPlanner
@@ -338,7 +357,7 @@ class AgentOrchestrator:
             self._mission_store,
             self._registry,
             self._executor,
-            execute_local_tool=self._execute_local_tool,
+            execute_local_tool=self._execute_mission_local_tool,
             skill_executor=self._skill_executor,
         )
         await self._set_status(
@@ -492,6 +511,21 @@ class AgentOrchestrator:
             for turn in load_conversation_history()[-6:]
         ]
 
+        from hermes.context.entity_decision import Confidence
+        from hermes.screen.plan import build_catalog_search_intent, build_screen_perception_intent
+
+        screen_intent = build_screen_perception_intent(message, conv_ctx)
+        if screen_intent is None:
+            screen_intent = build_catalog_search_intent(message, conv_ctx)
+        if screen_intent is not None:
+            plan = router.route(screen_intent, confidence=Confidence.HIGH, context=conv_ctx)
+            self._store_routing_trace(message, screen_intent, plan)
+            conv_ctx.record_intent(screen_intent.to_dict(), route_kind=str(plan.kind))
+            if plan.is_executable:
+                return await self._dispatch_routed_plan(
+                    message, screen_intent, plan, conv_ctx
+                )
+
         await self._set_status(AgentPhase.PLANNING, "Ne istedigini anlamaya calisiyorum...")
         result = await understanding.understand(
             message, context=conv_ctx, history=history or None
@@ -531,11 +565,17 @@ class AgentOrchestrator:
             tools=[step.tool_name for step in plan.steps],
             tool_source="capability_resolver",
         )
+        return await self._dispatch_routed_plan(message, result.intent, plan, conv_ctx)
+
+    async def _dispatch_routed_plan(
+        self, message: str, intent: Any, plan: Any, conv_ctx: Any
+    ) -> str | None:
+        from hermes.intent.router import RouteKind
 
         if plan.kind is RouteKind.CONVERSATION:
-            reply = plan.question or result.intent.reply or "Nasil yardimci olabilirim?"
+            reply = plan.question or intent.reply or "Nasil yardimci olabilirim?"
             return await self._finish_intent_turn(
-                message, reply, conv_ctx, AgentPhase.COMPLETED, intent=result.intent, plan=plan
+                message, reply, conv_ctx, AgentPhase.COMPLETED, intent=intent, plan=plan
             )
 
         if plan.kind is RouteKind.QUESTION:
@@ -544,7 +584,7 @@ class AgentOrchestrator:
                 plan.question,
                 conv_ctx,
                 AgentPhase.WAITING_FOR_USER,
-                intent=result.intent,
+                intent=intent,
                 plan=plan,
             )
 
@@ -554,7 +594,7 @@ class AgentOrchestrator:
                 _describe_capability_gap(plan),
                 conv_ctx,
                 AgentPhase.FAILED,
-                intent=result.intent,
+                intent=intent,
                 plan=plan,
             )
 
@@ -568,19 +608,22 @@ class AgentOrchestrator:
                 outcome.summary,
                 conv_ctx,
                 phase,
-                intent=result.intent,
+                intent=intent,
                 plan=plan,
             )
 
-        return await self._run_intent_mission(message, plan, result.intent, conv_ctx)
+        return await self._run_intent_mission(message, plan, intent, conv_ctx)
 
     async def _run_intent_mission(
         self, message: str, plan: Any, intent: Any, conv_ctx: Any
     ) -> str | None:
         """Hand routed steps to the mission engine as a pre-validated plan."""
+        from hermes.intent.models import canonical_required_capabilities
+
         working_context = {
             "agent_intent": intent.to_dict(),
-            "resolved_references": conv_ctx.resolved_references(),
+            "resolved_references": conv_ctx.resolved_references(message),
+            "required_capabilities": list(canonical_required_capabilities(intent)),
         }
         mission = self._mission_store.create_mission(
             message, working_context=working_context
@@ -670,6 +713,24 @@ class AgentOrchestrator:
         append_conversation_turn("user", message)
         append_conversation_turn("assistant", text)
         conv_ctx.save()
+        if plan is not None and getattr(plan, "kind", None) is not None:
+            kind = str(getattr(plan, "kind", "") or "")
+            if kind == "question":
+                self.state.metadata["turn_outcome"] = "question"
+            elif kind == "unsupported":
+                self.state.metadata["turn_outcome"] = "unsupported"
+            else:
+                self.state.metadata["turn_outcome"] = {
+                    AgentPhase.COMPLETED: "completed",
+                    AgentPhase.FAILED: "failed",
+                    AgentPhase.WAITING_FOR_USER: "waiting",
+                }.get(phase, "failed")
+        else:
+            self.state.metadata["turn_outcome"] = {
+                AgentPhase.COMPLETED: "completed",
+                AgentPhase.FAILED: "failed",
+                AgentPhase.WAITING_FOR_USER: "waiting",
+            }.get(phase, "failed")
         await self._set_status(phase, text[:200])
         return text
 
@@ -795,6 +856,7 @@ class AgentOrchestrator:
         self.state.metadata.pop("routing_trace", None)
         self.state.metadata.pop("intent_unavailable", None)
         self.state.metadata.pop("faz_f_trace", None)
+        self.state.metadata.pop("turn_outcome", None)
 
         conv_ctx = ConversationalContext.load()
         conv_ctx.reconcile_with_filesystem()
@@ -817,10 +879,19 @@ class AgentOrchestrator:
             return text
 
         from hermes.context.context_correction import resolve_user_correction
+        from hermes.mission.models import MissionStatus
 
         correction = resolve_user_correction(message, conv_ctx)
         if correction.handled:
             if correction.repeat_message:
+                active_waiting = self._mission_store.load_active()
+                if (
+                    active_waiting is not None
+                    and active_waiting.status == MissionStatus.WAITING_FOR_USER
+                ):
+                    self._release_waiting_mission(
+                        active_waiting.mission_id, conv_ctx, message
+                    )
                 conv_ctx.save()
                 return await self.process_message(correction.repeat_message, session_id=session_id)
             text = correction.response
@@ -832,9 +903,10 @@ class AgentOrchestrator:
             await self._set_status(AgentPhase.COMPLETED, "Tamam.")
             return text
 
+        conv_ctx.set_current_objective(message)
+
         from hermes.agent.mission_flow import (
             handle_mission_commands,
-            is_independent_interrupt,
             is_mission_resume_message,
         )
         from hermes.mission.models import MissionStatus
@@ -860,7 +932,11 @@ class AgentOrchestrator:
                     text = f"{self.state.session_notice}\n\n{text}"
                 return text
 
-        from hermes.agent.mission_continuation import detect_mission_continuation
+        from hermes.agent.mission_continuation import (
+            PendingReplyKind,
+            classify_pending_user_message,
+            detect_mission_continuation,
+        )
 
         continuation = detect_mission_continuation(message, conv_ctx, self._mission_store)
         if continuation.continue_mission_id and continuation.is_continuation:
@@ -890,17 +966,18 @@ class AgentOrchestrator:
             return text
 
         active_mission = self._mission_store.load_active()
-        if (
-            active_mission
-            and active_mission.status == MissionStatus.WAITING_FOR_USER
-            and not is_independent_interrupt(message)
-            and not is_mission_resume_message(message)
-        ):
-            self._mission_store.resume_from_user(active_mission.mission_id, message)
-            text = await self._continue_mission(active_mission.mission_id, message, conv_ctx)
-            if self.state.session_notice and self.state.session_notice not in text:
-                text = f"{self.state.session_notice}\n\n{text}"
-            return text
+        if active_mission and active_mission.status == MissionStatus.WAITING_FOR_USER:
+            pending_kind = classify_pending_user_message(message, active_mission)
+            if pending_kind is PendingReplyKind.CONTINUE and not is_mission_resume_message(
+                message
+            ):
+                self._mission_store.resume_from_user(active_mission.mission_id, message)
+                text = await self._continue_mission(active_mission.mission_id, message, conv_ctx)
+                if self.state.session_notice and self.state.session_notice not in text:
+                    text = f"{self.state.session_notice}\n\n{text}"
+                return text
+            if pending_kind is PendingReplyKind.NEW_TASK:
+                self._release_waiting_mission(active_mission.mission_id, conv_ctx, message)
 
         self._suspend_active_mission_if_needed(message, conv_ctx, reason="Kullanici yeni gorev istedi")
 
@@ -1081,7 +1158,7 @@ class AgentOrchestrator:
             working_context = dict(agent_decision.working_context)
             if not working_context.get("parsed_goal"):
                 working_context["parsed_goal"] = parsed.to_dict()
-            ctx_refs = conv_ctx.resolved_references()
+            ctx_refs = conv_ctx.resolved_references(message)
             merged_refs = {**ctx_refs, **resolved_refs}
             if merged_refs:
                 working_context["resolved_references"] = merged_refs
@@ -1656,6 +1733,8 @@ class AgentOrchestrator:
 
         req = intent.request
         refs = dict(resolved_references or {})
+        if message:
+            conv_ctx.set_current_objective(message)
 
         if req.name in ("create_file", "write_file"):
             from hermes.context.file_intent import FileIntentKind, classify_file_intent
@@ -1866,12 +1945,21 @@ class AgentOrchestrator:
             + message
         )
 
+    async def _execute_mission_local_tool(
+        self,
+        local_call: LocalToolRequest,
+        run_id: str,
+    ) -> Any:
+        """Mission steps verify once, in MissionEngine._observe_and_verify."""
+        return await self._execute_local_tool(local_call, run_id, verify=False)
+
     async def _execute_local_tool(
         self,
         local_call: LocalToolRequest,
         run_id: str,
         *,
         user_message: str = "",
+        verify: bool = True,
     ) -> Any:
         from hermes.tools.execution_target import ExecutionTarget, validate_runtime_execution
         from hermes.tools.pc_manager import PCManager
@@ -1939,11 +2027,20 @@ class AgentOrchestrator:
             skip = False
         try:
             return await pc.process(
-                command, run_id=run_id, skip_approval=skip, user_message=user_message
+                command,
+                run_id=run_id,
+                skip_approval=skip,
+                user_message=user_message,
+                verify=verify,
             )
         except ToolApprovalRequiredError as exc:
             if skip:
-                return await pc.process(command, run_id=run_id, skip_approval=True)
+                return await pc.process(
+                    command,
+                    run_id=run_id,
+                    skip_approval=True,
+                    verify=verify,
+                )
             await self._set_status(AgentPhase.AWAITING_APPROVAL, "Yerel tool onayi bekleniyor...")
             approval = ApprovalRequest(
                 id=run_id,
@@ -1966,7 +2063,9 @@ class AgentOrchestrator:
                     error="Kullanici yerel tool calistirmayi reddetti.",
                 )
             self._approval.mark_run_bulk_approved(run_id)
-            return await pc.process(command, run_id=run_id, skip_approval=True)
+            return await pc.process(
+                command, run_id=run_id, skip_approval=True, verify=verify
+            )
 
     async def _consume_run_events(
         self, run: Run, builder: ResponseBuilder, max_steps: int

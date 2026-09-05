@@ -7,9 +7,10 @@ there the normal chain applies unchanged: policy, approval, guard, verify,
 recover.
 
 The live probe showed `required_capabilities` is a scope hint rather than a
-step list — it can carry an extra capability the sentence never asked for. So
-a capability is only turned into a step when the arguments for it can actually
-be supplied; anything else is reported as missing information, not guessed.
+step list — it can carry an extra capability the sentence never asked for. A
+capability becomes a step only when its arguments can be supplied now or
+bound from a prior step's structured output. Anything still unfillable is a
+question, not a partial plan that later reports success.
 """
 from __future__ import annotations
 
@@ -19,16 +20,18 @@ from typing import Any
 
 from hermes.config.settings import RiskLevel
 from hermes.context.entity_decision import Confidence
-from hermes.intent.models import AgentIntent, IntentStep
+from hermes.intent.models import AgentIntent, IntentStep, canonical_required_capabilities
 from hermes.mission.models import MissionStep, StepAction
-from hermes.tools.capabilities import capability_risk_floor, select_tool_for_capability
+from hermes.tools.capabilities import (
+    bindable_fields,
+    capability_risk_floor,
+    select_tool_accepting,
+    select_tool_for_capability,
+)
 from hermes.tools.registry import ToolRegistry
 
-# Session facts that can stand in for an argument the user did not repeat.
+# Type-specific session facts. Historical file paths are not dumped as `path`.
 _CONTEXT_INPUTS: tuple[tuple[str, str], ...] = (
-    ("path", "active_file"),
-    ("path", "last_created_file"),
-    ("path", "last_opened_file"),
     ("url", "last_browser_url"),
     ("url", "last_url"),
     ("app", "last_application"),
@@ -70,6 +73,21 @@ def build_input_pool(intent: AgentIntent, context: Any = None) -> dict[str, Any]
     pool: dict[str, Any] = {}
 
     if context is not None:
+        focus = getattr(context, "active_focus", None)
+        focus_id = getattr(focus, "identifier", None) if focus is not None else None
+        focus_type = getattr(focus, "type", "") if focus is not None else ""
+        invalidated = getattr(context, "is_invalidated", None)
+        if focus_id and not (callable(invalidated) and invalidated(focus_id)):
+            if focus_type == "file":
+                pool["path"] = focus_id
+            elif focus_type in {"url", "browser_page"}:
+                pool["url"] = focus_id
+            elif focus_type == "screen_entity":
+                pool["session_entity_id"] = focus_id
+        if focus_type == "screen_entity" or focus is None:
+            session_id = getattr(context, "last_screen_entity_id", None)
+            if session_id:
+                pool.setdefault("session_entity_id", session_id)
         for key, attribute in _CONTEXT_INPUTS:
             if key in pool:
                 continue
@@ -80,11 +98,6 @@ def build_input_pool(intent: AgentIntent, context: Any = None) -> dict[str, Any]
     for key, value in intent.references.items():
         if value:
             pool[str(key)] = value
-
-    for step in intent.plan:
-        for key, value in step.inputs.items():
-            if value:
-                pool[str(key)] = value
 
     return pool
 
@@ -100,6 +113,22 @@ def suggest_alternatives(
     available = registry.capabilities()
     same_domain = [c for c in available if c.split(".", 1)[0] == domain]
     return tuple(same_domain[:limit])
+
+
+def _canonical_intent_steps(intent: AgentIntent) -> tuple[IntentStep, ...]:
+    """Plan steps first, then required capabilities the plan omitted."""
+    ordered: list[IntentStep] = list(intent.plan)
+    present = {step.capability for step in ordered}
+    for capability in intent.required_capabilities:
+        if capability not in present:
+            ordered.append(IntentStep(capability=capability))
+            present.add(capability)
+    if ordered:
+        return tuple(ordered)
+    return tuple(
+        IntentStep(capability=capability)
+        for capability in canonical_required_capabilities(intent)
+    )
 
 
 class IntentRouter:
@@ -185,7 +214,7 @@ class IntentRouter:
             )
 
         unavailable = tuple(
-            c for c in intent.required_capabilities if c not in available
+            c for c in canonical_required_capabilities(intent) if c not in available
         )
         if unavailable:
             return RoutedPlan(
@@ -217,14 +246,19 @@ class IntentRouter:
             )
 
         pool = build_input_pool(intent, context)
+        skill_pool = dict(pool)
+        for planned in intent.plan:
+            for key, value in planned.inputs.items():
+                if value:
+                    skill_pool[str(key)] = value
         needs_approval = confidence is Confidence.RISKY
 
-        skill = self.match_skill(intent, pool)
+        skill = self.match_skill(intent, skill_pool)
         if skill is not None:
             return RoutedPlan(
                 kind=RouteKind.SKILL,
                 skill_id=skill.skill_id,
-                skill_inputs=pool,
+                skill_inputs=skill_pool,
                 needs_approval=needs_approval,
             )
 
@@ -257,6 +291,19 @@ class IntentRouter:
                 unfillable_capabilities=unfillable,
             )
 
+        if unfillable:
+            missing = ", ".join(unfillable)
+            return RoutedPlan(
+                kind=RouteKind.QUESTION,
+                question=intent.clarifying_question
+                or (
+                    "Bu gorevin zorunlu bir adimini su an tamamlayamam: "
+                    f"{missing}. Eksik bilgiyi netlestirir misin?"
+                ),
+                reason="zorunlu yetenek cozulemedi",
+                unfillable_capabilities=unfillable,
+            )
+
         return RoutedPlan(
             kind=RouteKind.CAPABILITY_PLAN,
             steps=steps,
@@ -267,16 +314,13 @@ class IntentRouter:
     def _build_capability_steps(
         self, intent: AgentIntent, pool: dict[str, Any]
     ) -> tuple[list[MissionStep], tuple[str, ...]]:
-        """One step per planned capability we can actually call, in order.
+        """One step per canonical required capability, in order.
 
-        The plan is used in preference to the capability summary because the
-        summary is a scope hint: live replies listed capabilities the sentence
-        never asked for, and running one step per entry produced nonsense.
+        Plan steps keep their inputs. Capabilities listed only in
+        required_capabilities are appended so a short plan cannot shrink
+        the goal. Unfillable leftovers become a question, not a partial plan.
         """
-        planned = intent.plan or tuple(
-            IntentStep(capability=capability)
-            for capability in intent.required_capabilities
-        )
+        planned = _canonical_intent_steps(intent)
 
         steps: list[MissionStep] = []
         unfillable: list[str] = []
@@ -288,9 +332,21 @@ class IntentRouter:
             selection = select_tool_for_capability(
                 self._registry, capability, arguments
             )
+            bindings: list[dict[str, str]] = []
             if selection is None:
-                unfillable.append(capability)
-                continue
+                bound = self._bind_from_prior_steps(capability, steps)
+                if bound is None:
+                    unfillable.append(capability)
+                    continue
+                tool_name, bindings = bound
+                selection_name = tool_name
+                selection_args: dict[str, Any] = {}
+            else:
+                selection_name = selection.tool_name
+                selection_args = dict(selection.arguments)
+                extra = self._supplement_screen_state_binding(capability, steps)
+                if extra:
+                    bindings = list(bindings) + extra
 
             risk = capability_risk_floor(self._registry, capability)
             # A change to the machine with nothing to act on has no safe
@@ -298,7 +354,8 @@ class IntentRouter:
             # pid. Sixteen tools still declare an empty input schema, so this
             # cannot be caught by argument fitting alone.
             if (
-                not selection.arguments
+                not selection_args
+                and not bindings
                 and risk is not None
                 and risk.severity > RiskLevel.READ_ONLY.severity
             ):
@@ -311,18 +368,69 @@ class IntentRouter:
                     step_id=step_id,
                     title=f"{capability} yetenegini kullaniyorum",
                     action=StepAction.TOOL,
-                    tool_name=selection.tool_name,
-                    tool_arguments=dict(selection.arguments),
+                    tool_name=selection_name,
+                    tool_arguments=selection_args,
                     depends_on=[previous_id] if previous_id else [],
                     risk_level=risk.value if risk is not None else None,
                     expected_result=intent.expected_outcome,
+                    argument_bindings=bindings,
                     metadata={
                         "source": "intent_router",
                         "capability": capability,
                         "goal": intent.goal,
+                        "deferred_binding": bool(bindings),
                     },
                 )
             )
             previous_id = step_id
 
         return steps, tuple(unfillable)
+
+    def _supplement_screen_state_binding(
+        self, capability: str, prior_steps: list[MissionStep]
+    ) -> list[dict[str, str]]:
+        """Bind the latest observe snapshot into resolve even when reference is known."""
+        if capability != "screen.resolve":
+            return []
+        for prior in reversed(prior_steps):
+            producer = str((prior.metadata or {}).get("capability") or "")
+            if producer != "screen.observe":
+                continue
+            if "screen_state" not in bindable_fields(producer, capability, self._registry):
+                continue
+            return [
+                {
+                    "argument": "screen_state",
+                    "source_step_id": prior.step_id,
+                    "source_field": "screen_state",
+                }
+            ]
+        return []
+
+    def _bind_from_prior_steps(
+        self, capability: str, prior_steps: list[MissionStep]
+    ) -> tuple[str, list[dict[str, str]]] | None:
+        """Bind a required input from a previous step's structured output.
+
+        Field names are conventional (path, url, content). No tool-name switch.
+        """
+        for prior in reversed(prior_steps):
+            producer = str((prior.metadata or {}).get("capability") or "")
+            fields = bindable_fields(producer, capability, self._registry)
+            if not fields:
+                continue
+            tool_name = select_tool_accepting(self._registry, capability, fields[0])
+            if not tool_name:
+                continue
+            return (
+                tool_name,
+                [
+                    {
+                        "argument": field,
+                        "source_step_id": prior.step_id,
+                        "source_field": field,
+                    }
+                    for field in fields
+                ],
+            )
+        return None

@@ -9,6 +9,8 @@ import pytest
 
 from hermes.agent.conversation_flow import handle_meta_conversation, is_user_facing_summary
 from hermes.agent.mission_continuation import (
+    PendingReplyKind,
+    classify_pending_user_message,
     detect_mission_continuation,
     is_mission_continuation_message,
 )
@@ -82,7 +84,7 @@ def desktop(tmp_path, monkeypatch):
 def _make_real_pc_process(desktop: Path):
     registry = create_default_registry()
 
-    async def process(self, command, run_id="", skip_approval=False, *, user_message=""):
+    async def process(self, command, run_id="", skip_approval=False, *, user_message="", verify=True):
         tool_name, arguments = parse_pc_command(command)
         tool = registry.get(tool_name)
         if not tool:
@@ -262,6 +264,46 @@ def test_mission_continuation_detect(store):
     decision = detect_mission_continuation("Bir de önemli olanları ayır.", ctx, store)
     assert decision.is_continuation
     assert decision.continue_mission_id == mission.mission_id
+
+
+def test_waiting_selection_is_continuation(store):
+    ctx = ConversationalContext()
+    mission = store.create_mission("su videoyu ac")
+    mission.status = MissionStatus.WAITING_FOR_USER
+    mission.working_context["pending_screen_resolve"] = {
+        "step_id": "intent_2_screen_resolve",
+        "reference": "su videoyu ac",
+    }
+    store.save(mission)
+    ctx.active_mission_id = mission.mission_id
+    decision = detect_mission_continuation("ikinci olani ac", ctx, store)
+    assert decision.is_continuation
+    assert classify_pending_user_message("ikinci olani ac", mission) is PendingReplyKind.CONTINUE
+
+
+def test_waiting_new_goal_is_not_continuation(store):
+    ctx = ConversationalContext()
+    mission = store.create_mission("su videoyu ac")
+    mission.status = MissionStatus.WAITING_FOR_USER
+    mission.working_context["pending_screen_resolve"] = {
+        "step_id": "intent_2_screen_resolve",
+        "reference": "su videoyu ac",
+    }
+    store.save(mission)
+    ctx.active_mission_id = mission.mission_id
+    decision = detect_mission_continuation(
+        "Youtube acip teknoloji ile ilgili bir video bul ve ac",
+        ctx,
+        store,
+    )
+    assert not decision.is_continuation
+    assert (
+        classify_pending_user_message(
+            "ekranda gordugun ikinci videoyu ac", mission
+        )
+        is PendingReplyKind.NEW_TASK
+    )
+    assert classify_pending_user_message("vazgec", mission) is PendingReplyKind.CANCEL
 
 
 def test_independent_task_not_continuation(store):

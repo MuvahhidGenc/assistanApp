@@ -50,6 +50,11 @@ def match_local_intent(message: str) -> LocalIntent | None:
     if should_defer_to_server(text):
         return None
 
+    from hermes.screen.reference import is_screen_perception_task
+
+    if is_screen_perception_task(text) and not extract_url_hint(text) and not _extract_youtube_url(text):
+        return None
+
     lower = text.lower()
 
     if extract_url_hint(text) or _extract_youtube_url(text):
@@ -265,7 +270,13 @@ def guess_local_action(
     lower = (message or "").lower()
     if not lower.strip():
         return None
-    if _wants_screen_read(lower) or re.search(r"\bekran", lower):
+
+    from hermes.screen.reference import is_screen_perception_task
+
+    if is_screen_perception_task(message):
+        return None
+
+    if _wants_screen_read(lower):
         return LocalIntent(LocalToolRequest("read_screen_text", {}), "Ekrandaki yazi okunacak.")
     if re.search(r"\bkontrol\b", lower) and re.search(r"ekran|pc|bilgisayar|sistem", lower):
         return LocalIntent(LocalToolRequest("read_screen_text", {}), "Ekrandaki yazi okunacak.")
@@ -395,8 +406,10 @@ def _match_interactive_control(text: str, lower: str) -> LocalIntent | None:
     if re.search(r"\b(tikla|tıkla|basla|başla|sec|seç)\b", lower) or re.search(
         r"videosunu\s+(ac|aç|izle|oynat)|video(?:yu|su)\s+(ac|aç|izle|oynat)", lower
     ):
+        from hermes.screen.reference import is_literal_click_query
+
         target = _extract_click_target(text)
-        if target:
+        if target and is_literal_click_query(text, target):
             return LocalIntent(
                 LocalToolRequest("click_text", {"text": target, "partial": True}),
                 f"Tiklanacak: {target}",
@@ -457,6 +470,10 @@ def _match_video_intent(text: str, lower: str) -> LocalIntent | None:
     if not wants_video:
         return None
     if not re.search(r"\b(ac|aç|open|izle|oynat|baslat|başlat|goster|göster|ara|aram)\b", lower):
+        return None
+    from hermes.screen.reference import is_screen_perception_task, looks_like_screen_reference
+
+    if is_screen_perception_task(text) or looks_like_screen_reference(text):
         return None
     url = _extract_youtube_url(text) or extract_url_hint(text)
     if url:
@@ -730,6 +747,26 @@ def _word_content_for_message(text: str, lower: str, path: str) -> tuple[str, st
     return title, body
 
 
+def _container_folder_from_context(
+    conv_ctx: object | None,
+    refs: dict[str, str],
+) -> str | None:
+    folder = refs.get("target_folder")
+    if folder:
+        return folder
+    if conv_ctx is None:
+        return None
+    getter = getattr(conv_ctx, "focus_container", None)
+    if callable(getter):
+        folder = getter()
+        if folder:
+            return str(folder)
+    focus = getattr(conv_ctx, "active_focus", None)
+    if focus is not None and getattr(focus, "type", "") == "folder":
+        return str(focus.identifier)
+    return None
+
+
 def _match_word_document(text: str, lower: str, **kwargs: object) -> LocalIntent | None:
     if not re.search(r"\b(word|docx|\.docx)\b", lower):
         return None
@@ -738,7 +775,19 @@ def _match_word_document(text: str, lower: str, **kwargs: object) -> LocalIntent
         lower,
     ):
         return None
-    path = _extract_desktop_path(text, lower) or "Hermes2/tevhid.docx"
+    refs = dict(kwargs.get("resolved_references") or {}) if isinstance(kwargs.get("resolved_references"), dict) else {}
+    conv_ctx = kwargs.get("conv_ctx")
+    path = _extract_desktop_path(text, lower)
+    if path and Path(path).stem.casefold() in {"içine", "icine", "word"}:
+        path = None
+    folder = _container_folder_from_context(conv_ctx if isinstance(conv_ctx, object) else None, refs)
+    if folder:
+        name = Path(path).name if path and str(path).lower().endswith(".docx") else None
+        if not name:
+            name = "tevhid.docx" if "tevhid" in lower else "belge.docx"
+        path = str(Path(folder) / name)
+    elif not path:
+        path = "Hermes2/tevhid.docx"
     if not path.lower().endswith(".docx"):
         path = f"{path}.docx"
     title, content = _word_content_for_message(text, lower, path)
@@ -808,17 +857,39 @@ def _match_write_file(
     if not (has_txt or has_literal_write or has_inner_write):
         return None
 
+    from hermes.context.conversational_context import message_wants_container
+    from hermes.context.folder_reference import message_uses_contextual_folder
+
+    create_in_container = (
+        (message_uses_contextual_folder(text) or message_wants_container(text))
+        and bool(
+            re.search(r"\b(word|docx|\.docx|olustur|oluştur|yarat|create)\b", lower)
+            or _extract_filename_hint(text, lower)
+        )
+        and not re.search(r"dosyan[ıi]n\s+i[cç]ine|içeriğini|icerigini", lower)
+    )
+
     path = _extract_desktop_path(text, lower)
-    if not path:
+    if create_in_container:
+        folder = _container_folder_from_context(conv_ctx, refs)
+        file_name = _extract_filename_hint(text, lower)
+        if folder and file_name:
+            path = str(Path(folder) / file_name)
+        elif folder and path and Path(path).stem.casefold() in {"içine", "icine"}:
+            path = None
+        elif not file_name:
+            path = None
+    elif not path:
+        focus = getattr(conv_ctx, "active_focus", None) if conv_ctx is not None else None
         if refs.get("target_file"):
             path = refs["target_file"]
+        elif focus is not None and getattr(focus, "type", "") == "file":
+            path = getattr(focus, "identifier", None)
         elif conv_ctx is not None and getattr(conv_ctx, "active_file", None):
             path = getattr(conv_ctx, "active_file")
         elif refs.get("target_folder"):
             file_name = _extract_filename_hint(text, lower)
             if file_name:
-                from pathlib import Path
-
                 path = str(Path(refs["target_folder"]) / file_name)
     if not path:
         return None

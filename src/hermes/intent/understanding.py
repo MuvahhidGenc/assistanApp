@@ -86,6 +86,12 @@ plan icin parametre adlari (yalnizca gerekeni kullan):
 - query: aranacak metin veya desen
 - destination: hedef klasor yolu
 - name: servis, surec veya uygulama adi
+- reference: ekrandaki bir nesneye dogal dil referansi
+
+Ekrandaki bir nesneye (ilk/orta/sag/su video, buton, pencere) tiklanacaksa
+browser.navigate aramasina indirgeme. Sirayla screen.observe, screen.resolve,
+screen.click, gerekirse tekrar screen.observe kullan. Koordinatlari uydurma;
+onlari screen.resolve uretir.
 
 Kurallar:
 - Asla arac (tool) adi yazma; yalnizca yukaridaki yetenek adlarini kullan.
@@ -146,9 +152,22 @@ def build_context_block(context: Any = None, history: list[str] | None = None) -
     """
     lines: list[str] = []
     if context is not None:
+        focus = getattr(context, "active_focus", None)
+        focus_type = getattr(focus, "type", "") if focus is not None else ""
+        focus_id = getattr(focus, "identifier", None) if focus is not None else None
+        container = None
+        getter = getattr(context, "focus_container", None)
+        if callable(getter):
+            container = getter()
         facts = {
-            "acik dosya": getattr(context, "active_file", None),
-            "acik klasor": getattr(context, "active_folder", None),
+            "aktif odak": f"{focus_type}: {focus_id}" if focus_id else None,
+            "konteyner": container,
+            "acik dosya": focus_id
+            if focus_type == "file"
+            else None,
+            "acik klasor": focus_id
+            if focus_type == "folder"
+            else container,
             "son olusturulan dosya": getattr(context, "last_created_file", None),
             "son acilan dosya": getattr(context, "last_opened_file", None),
             "son uygulama": getattr(context, "last_application", None),

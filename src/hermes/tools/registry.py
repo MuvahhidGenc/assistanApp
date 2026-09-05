@@ -44,6 +44,7 @@ def _all_windows_tools() -> list[BaseTool]:
         PingHostTool,
         TracerouteTool,
     )
+    from hermes.tools.windows.screen_tools import ResolveScreenEntityTool
     from hermes.tools.windows.pc_actions import (
         ControlServiceTool,
         CreateFolderTool,
@@ -100,6 +101,7 @@ def _all_windows_tools() -> list[BaseTool]:
         KillProcessTool(),
         ControlServiceTool(),
         ReadScreenTextTool(),
+        ResolveScreenEntityTool(),
         CreateFolderTool(),
         OpenPathTool(),
         InstallProgramTool(),
