@@ -75,7 +75,9 @@ Sema:
   "confidence": 0.0,
   "expected_outcome": "basarili olursa bilgisayarda ne degismis olacak",
   "mode": "task",
-  "reply": ""
+  "reply": "",
+  "relation": "new_task",
+  "revisions": {{}}
 }}
 
 plan icin parametre adlari (yalnizca gerekeni kullan):
@@ -106,6 +108,11 @@ Kurallar:
   "question" (ne istendigi belirsiz). Sohbet icin plan ve yetenek bos birak,
   kullaniciya soylenecek metni reply alanina yaz.
 - reply: yalnizca conversation veya question ise doldur; task icin bos birak.
+- relation: mevcut gorev varsa new_task | revise | continue | cancel. Duzeltme
+  (format, hedef klasor, icerik) revise'dir; ayni gorevi surdurmek continue;
+  iptal cancel; bagimsiz yeni is new_task. Mevcut gorev yoksa new_task yaz.
+- revisions: yalnizca relation=revise ise doldur. Anahtarlar: format, destination,
+  filename, topic. History'deki eski dosyalari hedef gibi kullanma.
 - confidence: kullanicinin ne istedigini ne kadar iyi anladigini yaz.
   Istek acikca anlasiliyorsa eksik bir ayrinti olsa bile yuksek ver;
   yalnizca ne istendigi gercekten belirsizse dusuk ver.
@@ -144,6 +151,16 @@ def _extract_chat_content(response: dict[str, Any]) -> str:
     return ""
 
 
+def _format_task_parameters(context: Any) -> str | None:
+    raw = getattr(context, "task_parameters", None)
+    if hasattr(raw, "to_dict"):
+        raw = raw.to_dict()
+    if not isinstance(raw, dict) or not raw:
+        return None
+    shown = ", ".join(f"{key}={value}" for key, value in raw.items() if value)
+    return shown or None
+
+
 def build_context_block(context: Any = None, history: list[str] | None = None) -> str:
     """Give the model what the session already knows, so "onu" resolves.
 
@@ -173,7 +190,9 @@ def build_context_block(context: Any = None, history: list[str] | None = None) -
             "son uygulama": getattr(context, "last_application", None),
             "son tarayici adresi": getattr(context, "last_browser_url", None),
             "son adres": getattr(context, "last_url", None),
-            "suregelen gorev": getattr(context, "current_task", None),
+            "suregelen gorev": getattr(context, "current_objective", None)
+            or getattr(context, "current_task", None),
+            "gorev parametreleri": _format_task_parameters(context),
             "onceki gorev sonucu": getattr(context, "last_task_result", None)
             or getattr(context, "last_action_summary", None)
             or getattr(context, "last_mission_summary", None),
@@ -188,9 +207,13 @@ def build_context_block(context: Any = None, history: list[str] | None = None) -
         refs = getattr(context, "resolved_references", None)
         resolved = refs() if callable(refs) else refs
         if isinstance(resolved, dict) and resolved:
-            shown = ", ".join(f"{key}={value}" for key, value in resolved.items() if value)
+            shown = ", ".join(
+                f"{key}={value}"
+                for key, value in resolved.items()
+                if value and key not in {"last_created_file", "last_opened_file"}
+            )
             if shown:
-                known.append(f"- cozulmus referanslar: {shown}")
+                known.append(f"- aktif referanslar: {shown}")
         if known:
             lines.append("Mevcut oturum durumu:")
             lines.extend(known)

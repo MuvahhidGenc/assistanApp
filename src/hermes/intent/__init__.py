@@ -10,6 +10,7 @@ from hermes.intent.models import (
     validate_intent,
 )
 from hermes.intent.router import IntentRouter, RoutedPlan, RouteKind
+from hermes.intent.turn_relation import TurnKind, TurnRelation, classify_turn_relation
 from hermes.intent.understanding import IntentResult, IntentUnderstanding
 
 __all__ = [
@@ -20,6 +21,9 @@ __all__ = [
     "IntentValidation",
     "RouteKind",
     "RoutedPlan",
+    "TurnKind",
+    "TurnRelation",
+    "classify_turn_relation",
     "decide_confidence",
     "extract_intent_json",
     "llm_named_a_tool",

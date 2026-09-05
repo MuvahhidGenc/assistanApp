@@ -75,12 +75,16 @@ def classify_pending_user_message(message: str, mission: Any = None) -> PendingR
         return PendingReplyKind.NEW_TASK
     if is_mission_cancel_message(text):
         return PendingReplyKind.CANCEL
+    if is_clear_new_goal(text):
+        return PendingReplyKind.NEW_TASK
 
     features = extract_reference_features(text)
     if features.wants_navigate or is_web_or_app_open_message(text):
         return PendingReplyKind.NEW_TASK
     if requests_screen_rescan(text):
         return PendingReplyKind.NEW_TASK
+    if mission is not None and (features.spatial or features.ordinal is not None):
+        return PendingReplyKind.CONTINUE
     if features.type_hints and features.text_tokens:
         return PendingReplyKind.NEW_TASK
 

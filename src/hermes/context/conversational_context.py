@@ -168,6 +168,7 @@ class ConversationalContext:
     recent_actions: list[dict[str, Any]] = field(default_factory=list)
     current_task: str | None = None
     current_objective: str | None = None
+    task_parameters: dict[str, str] = field(default_factory=dict)
     last_successful_mission_id: str | None = None
     last_failed_mission_id: str | None = None
     last_verified_file: str | None = None
@@ -226,6 +227,7 @@ class ConversationalContext:
             "recent_actions": self.recent_actions,
             "current_task": self.current_task,
             "current_objective": self.current_objective,
+            "task_parameters": dict(self.task_parameters),
             "last_successful_mission_id": self.last_successful_mission_id,
             "last_failed_mission_id": self.last_failed_mission_id,
             "last_verified_file": self.last_verified_file,
@@ -294,6 +296,13 @@ class ConversationalContext:
             ],
             current_task=data.get("current_task"),
             current_objective=data.get("current_objective"),
+            task_parameters={
+                str(key): str(value)
+                for key, value in (data.get("task_parameters") or {}).items()
+                if str(value).strip()
+            }
+            if isinstance(data.get("task_parameters"), dict)
+            else {},
             last_successful_mission_id=data.get("last_successful_mission_id"),
             last_failed_mission_id=data.get("last_failed_mission_id"),
             last_verified_file=data.get("last_verified_file"),
@@ -414,6 +423,8 @@ class ConversationalContext:
             "recent_verified_actions": list(self.recent_verified_actions[:6]),
             "active_focus": self.active_focus.to_dict() if self.active_focus else None,
             "container_focus": self.container_focus.to_dict() if self.container_focus else None,
+            "current_objective": self.current_objective,
+            "task_parameters": dict(self.task_parameters),
         }
 
     def save(self) -> None:
@@ -666,6 +677,31 @@ class ConversationalContext:
             self.current_task = text[:500]
         self.touch()
 
+    def set_task_parameters(self, parameters: dict[str, str] | None) -> None:
+        from hermes.context.task_state import TaskParameters
+
+        payload = parameters if isinstance(parameters, dict) else {}
+        self.task_parameters = TaskParameters.from_dict(payload).to_dict()
+        self.touch()
+
+    def revise_task_parameters(self, updates: dict[str, str] | None) -> dict[str, str]:
+        from hermes.context.task_state import TaskParameters
+
+        merged = TaskParameters.from_dict(self.task_parameters).merge(
+            TaskParameters.from_dict(updates if isinstance(updates, dict) else {})
+        )
+        self.task_parameters = merged.to_dict()
+        self.touch()
+        return dict(self.task_parameters)
+
+    def clear_current_task_state(self) -> None:
+        self.current_objective = None
+        self.current_task = None
+        self.task_parameters = {}
+        self.active_mission_id = None
+        self.active_step_id = None
+        self.touch()
+
     def record_mission_outcome(self, mission_id: str, *, success: bool) -> None:
         if success:
             self.last_successful_mission_id = mission_id
@@ -736,6 +772,15 @@ class ConversationalContext:
                 self.recent_folders = _dedupe_append(self.recent_folders, self.active_folder)
                 self.record_entity("file", file_path, label=Path(file_path).name)
                 self.commit_focus("file", file_path, container=self.active_folder, source=tool_name)
+                from hermes.context.task_state import parameters_from_path
+
+                self.revise_task_parameters(
+                    parameters_from_path(
+                        file_path,
+                        action="create_document",
+                        topic=self.current_objective or "",
+                    ).to_dict()
+                )
 
         elif tool_name == "open_path" and path_value:
             opened = _normalize_path(str(path_value))

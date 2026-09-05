@@ -269,22 +269,17 @@ def _goal_has_file_operations_intent(user_goal: str) -> bool:
     text = (user_goal or "").casefold()
     if is_pdf_inspect_goal(user_goal):
         return False
-    patterns = (
-        r"\bpdf\b",
-        r"\bkopyala",
-        r"\bcopy\b",
-        r"\bbul\b",
-        r"\bara\b",
-        r"\btas[iı]",
-        r"\bmove\b",
-        r"indirilenler",
-        r"downloads",
-    )
-    if not any(re.search(pat, text) for pat in patterns):
-        return False
-    has_copy = bool(re.search(r"\b(pdf|kopyala|copy|tasi|taşı|move)\b", text))
-    has_search = bool(re.search(r"\b(bul|ara|search|pdf)\b", text)) or "indirilenler" in text
-    return has_copy and has_search
+    has_copy = bool(re.search(r"\b(kopyala|copy|tasi|taşı|move)\b", text))
+    has_search = bool(re.search(r"\b(bul|ara|search)\b", text))
+    known_source = "indirilenler" in text or "downloads" in text
+    # Format mentions ("PDF olsun") are revisions, not copy/search missions.
+    if has_copy and has_search:
+        return True
+    if has_search and known_source:
+        return True
+    if has_copy and known_source:
+        return True
+    return False
 
 
 def build_file_operations_plan(user_goal: str, registry: ToolRegistry) -> list[MissionStep]:
@@ -514,7 +509,10 @@ class MissionPlanner:
                         source="pdf_inspect_heuristic",
                     )
 
-        file_plan = build_file_operations_plan(mission.user_goal, self._registry)
+        if mission.working_context.get("turn_kind") == "revise":
+            file_plan = []
+        else:
+            file_plan = build_file_operations_plan(mission.user_goal, self._registry)
         if file_plan:
             validation = validate_plan_steps(
                 [step.to_dict() for step in file_plan],

@@ -49,7 +49,7 @@ class ReferenceFeatures:
 _SPATIAL: tuple[tuple[re.Pattern[str], SpatialSlot], ...] = (
     (re.compile(r"\b(ilk|birinci|first|en\s+[uü]st(?:teki)?|en\s+yukar[ıi])\b", re.I), SpatialSlot.FIRST),
     (re.compile(r"\b(son|sonuncu|last|en\s+alt(?:taki)?)\b", re.I), SpatialSlot.LAST),
-    (re.compile(r"\b(orta(?:daki|s[ıi]|sini)?|middle|center|merkez(?:deki)?)\b", re.I), SpatialSlot.CENTER),
+    (re.compile(r"\b(orta(?:daki(?:ni)?|s[ıi](?:n[ıi])?|sini)?|middle|center|merkez(?:deki)?)\b", re.I), SpatialSlot.CENTER),
     (re.compile(r"\b(sol(?:daki|unda)?|left)\b", re.I), SpatialSlot.LEFT),
     (re.compile(r"\b(sa[gğ](?:daki|inda)?|right)\b", re.I), SpatialSlot.RIGHT),
     (re.compile(r"\b([uü]st(?:teki|unde)?|top|yukar[ıi]daki)\b", re.I), SpatialSlot.TOP),

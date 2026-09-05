@@ -71,6 +71,8 @@ class AgentIntent:
     expected_outcome: str = ""
     mode: str = "task"
     reply: str = ""
+    relation: str = ""
+    revisions: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_multi_capability(self) -> bool:
@@ -134,6 +136,14 @@ class AgentIntent:
             expected_outcome=str(data.get("expected_outcome") or "").strip(),
             mode=mode,
             reply=str(data.get("reply") or "").strip(),
+            relation=str(data.get("relation") or "").strip().lower(),
+            revisions={
+                str(key): str(value)
+                for key, value in (data.get("revisions") or {}).items()
+                if str(value).strip()
+            }
+            if isinstance(data.get("revisions"), dict)
+            else {},
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -155,6 +165,8 @@ class AgentIntent:
             "expected_outcome": self.expected_outcome,
             "mode": self.mode,
             "reply": self.reply,
+            "relation": self.relation,
+            "revisions": dict(self.revisions),
         }
 
 

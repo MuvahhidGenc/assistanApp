@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-BUILD_LABEL = "screen-video-verify-v1"
+BUILD_LABEL = "turn-relation-v1"
 
 
 def _git_revision() -> str:

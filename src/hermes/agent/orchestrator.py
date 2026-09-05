@@ -346,6 +346,115 @@ class AgentOrchestrator:
             conv_ctx.suspended_mission_ids = [mission_id, *conv_ctx.suspended_mission_ids[:9]]
         conv_ctx.save()
 
+    async def _handle_task_cancel(self, message: str, conv_ctx: Any) -> str:
+        from hermes.client.session_store import append_conversation_turn
+
+        active = self._mission_store.load_active()
+        if active is not None:
+            self._mission_store.cancel_mission(active.mission_id, reason=message[:200])
+        conv_ctx.clear_current_task_state()
+        conv_ctx.save()
+        text = "Tamam, gorevi iptal ettim. Ne yapmami istersin?"
+        if self.state.session_notice:
+            text = f"{self.state.session_notice}\n\n{text}"
+        append_conversation_turn("user", message)
+        append_conversation_turn("assistant", text)
+        await self._set_status(AgentPhase.CANCELLED, "Gorev iptal edildi.")
+        return text
+
+    async def _apply_task_revision(
+        self,
+        message: str,
+        conv_ctx: Any,
+        relation: Any,
+        session_id: str | None = None,
+    ) -> str:
+        from pathlib import Path
+
+        from hermes.agent.local_intent import LocalIntent
+        from hermes.client.session_store import append_conversation_turn
+        from hermes.context.agent_context import promote_folder_in_context
+        from hermes.context.task_state import (
+            apply_format_to_path,
+            read_preserved_content,
+            tool_for_format,
+        )
+        from hermes.tools.manifest import LocalToolRequest
+
+        params = relation.parameters
+        conv_ctx.revise_task_parameters(params.to_dict())
+        if relation.invalidate_path:
+            conv_ctx.invalidate_target(relation.invalidate_path)
+        if params.destination:
+            promote_folder_in_context(conv_ctx, params.destination)
+            conv_ctx.commit_focus(
+                "folder",
+                params.destination,
+                container=params.destination,
+                source="revision",
+            )
+        waiting = self._mission_store.load_active()
+        if waiting is not None:
+            from hermes.mission.models import MissionStatus
+
+            if waiting.status == MissionStatus.WAITING_FOR_USER:
+                self._release_waiting_mission(waiting.mission_id, conv_ctx, message)
+        conv_ctx.save()
+
+        fmt = params.format
+        if fmt and fmt not in {"docx", "doc", "word"}:
+            destination = params.destination or conv_ctx.focus_container()
+            if not destination:
+                text = "Hedef klasoru netlestirir misin?"
+                append_conversation_turn("user", message)
+                append_conversation_turn("assistant", text)
+                await self._set_status(AgentPhase.WAITING_FOR_USER, "Hedef klasor gerekli.")
+                return text
+            source = params.source_path
+            content = params.content or read_preserved_content(source)
+            if not content:
+                content = params.topic or conv_ctx.current_objective or "Belge"
+            base = source or str(Path(destination) / (params.filename or "belge"))
+            path = str(Path(destination) / Path(apply_format_to_path(base, fmt)).name)
+            tool_name = tool_for_format(fmt)
+            intent = LocalIntent(
+                LocalToolRequest(
+                    tool_name,
+                    {
+                        "path": path,
+                        "title": params.topic or Path(path).stem,
+                        "content": content,
+                    },
+                ),
+                summary=f"Belge formati guncelleniyor: {path}",
+            )
+            text = await self._execute_resolved_local_intent(
+                intent,
+                message,
+                conv_ctx,
+                resolved_references=conv_ctx.resolved_references(message),
+            )
+            if self.state.session_notice:
+                text = f"{self.state.session_notice}\n\n{text}"
+            append_conversation_turn("user", message)
+            append_conversation_turn("assistant", text)
+            await self._set_status(AgentPhase.COMPLETED, "Gorev guncellendi.")
+            return text
+
+        replay = relation.replay_goal or conv_ctx.current_objective
+        if replay and replay.strip().casefold() != message.strip().casefold():
+            self._skip_turn_relation = True
+            try:
+                return await self.process_message(replay, session_id=session_id)
+            finally:
+                self._skip_turn_relation = False
+        text = "Hedefi guncelledim."
+        append_conversation_turn("user", message)
+        append_conversation_turn("assistant", text)
+        conv_ctx.save()
+        await self._set_status(AgentPhase.COMPLETED, "Hedef guncellendi.")
+        return text
+
     async def _run_mission_engine(self, mission_id: str) -> Any:
         from hermes.mission.engine import EngineResult, MissionEngine
         from hermes.mission.planner import MissionPlanner
@@ -551,6 +660,21 @@ class AgentOrchestrator:
                 AgentPhase.WAITING_FOR_USER,
             )
 
+        from hermes.intent.turn_relation import TurnKind, classify_turn_relation
+
+        llm_relation = classify_turn_relation(
+            message, conv_ctx, intent=result.intent
+        )
+        if llm_relation.kind is TurnKind.REVISE:
+            self._pending_new_objective = None
+            return await self._apply_task_revision(message, conv_ctx, llm_relation)
+        if llm_relation.kind is TurnKind.CANCEL:
+            self._pending_new_objective = None
+            return await self._handle_task_cancel(message, conv_ctx)
+        if llm_relation.kind is TurnKind.NEW_TASK:
+            conv_ctx.set_current_objective(message)
+            self._pending_new_objective = None
+
         plan = router.route(result.intent, confidence=result.confidence, context=conv_ctx)
         self._store_routing_trace(message, result.intent, plan)
         conv_ctx.record_intent(
@@ -624,6 +748,9 @@ class AgentOrchestrator:
             "agent_intent": intent.to_dict(),
             "resolved_references": conv_ctx.resolved_references(message),
             "required_capabilities": list(canonical_required_capabilities(intent)),
+            "turn_kind": str((self.state.metadata.get("turn_relation") or {}).get("kind") or ""),
+            "current_objective": conv_ctx.current_objective,
+            "task_parameters": dict(conv_ctx.task_parameters),
         }
         mission = self._mission_store.create_mission(
             message, working_context=working_context
@@ -878,8 +1005,46 @@ class AgentOrchestrator:
             await self._set_status(AgentPhase.COMPLETED, "Tamam.")
             return text
 
+        from hermes.agent.goal_parser import parse_goal
         from hermes.context.context_correction import resolve_user_correction
+        from hermes.intent.turn_relation import TurnKind, classify_turn_relation
         from hermes.mission.models import MissionStatus
+
+        parsed = parse_goal(message, conv_ctx)
+        waiting = self._mission_store.load_active()
+        if waiting is not None and waiting.status != MissionStatus.WAITING_FOR_USER:
+            waiting = None
+        relation = None
+        if not getattr(self, "_skip_turn_relation", False):
+            relation = classify_turn_relation(
+                message,
+                conv_ctx,
+                parsed=parsed,
+                waiting_mission=waiting,
+            )
+            self.state.metadata["turn_relation"] = {
+                "kind": str(relation.kind),
+                "source": relation.source,
+                "format": relation.parameters.format,
+                "destination": relation.parameters.destination,
+            }
+
+        if relation is not None and relation.kind is TurnKind.CANCEL:
+            return await self._handle_task_cancel(message, conv_ctx)
+
+        if (
+            relation is not None
+            and relation.kind is TurnKind.CONTINUE
+            and waiting is not None
+        ):
+            self._mission_store.resume_from_user(waiting.mission_id, message)
+            text = await self._continue_mission(waiting.mission_id, message, conv_ctx)
+            if self.state.session_notice and self.state.session_notice not in text:
+                text = f"{self.state.session_notice}\n\n{text}"
+            return text
+
+        if relation is not None and relation.kind is TurnKind.REVISE:
+            return await self._apply_task_revision(message, conv_ctx, relation, session_id)
 
         correction = resolve_user_correction(message, conv_ctx)
         if correction.handled:
@@ -903,7 +1068,9 @@ class AgentOrchestrator:
             await self._set_status(AgentPhase.COMPLETED, "Tamam.")
             return text
 
-        conv_ctx.set_current_objective(message)
+        # Current objective stays until this turn is confirmed as a new task.
+        # LLM-only revisions ("Aslinda Excel yap") must not replace it first.
+        self._pending_new_objective = message
 
         from hermes.agent.mission_flow import (
             handle_mission_commands,
@@ -1733,7 +1900,11 @@ class AgentOrchestrator:
 
         req = intent.request
         refs = dict(resolved_references or {})
-        if message:
+        pending = getattr(self, "_pending_new_objective", None)
+        if pending:
+            conv_ctx.set_current_objective(pending)
+            self._pending_new_objective = None
+        elif message and not conv_ctx.current_objective:
             conv_ctx.set_current_objective(message)
 
         if req.name in ("create_file", "write_file"):
