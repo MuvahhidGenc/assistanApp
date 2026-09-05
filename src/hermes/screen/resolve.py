@@ -3,10 +3,15 @@
 Reuses EntityDecision / Evidence / score_candidates. No per-phrase routes:
 spatial, text, visibility, type, and session signals are evidence on the
 same candidates.
+
+When the user was shown a numbered screen result set, ordinal/spatial
+choices bind to that presented order instead of re-scoring the whole OCR.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from hermes.context.entity_decision import (
     Confidence,
@@ -31,6 +36,85 @@ VISIBILITY_WEIGHT = 40
 TYPE_WEIGHT = 50
 SESSION_WEIGHT = 70
 WEAK_POSITION_WEIGHT = 12
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def build_screen_result_set(
+    *,
+    state: ScreenState | None,
+    presented_order: list[str] | tuple[str, ...],
+    source: str = "resolve_screen_entity",
+    clarification: str = "",
+) -> dict[str, Any]:
+    """Snapshot of what was offered to the user, in presentation order."""
+    order = [str(item) for item in presented_order if str(item).strip()]
+    entities: list[dict[str, Any]] = []
+    if state is not None:
+        for entity_id in order:
+            entity = state.entity(entity_id)
+            if entity is None:
+                continue
+            entities.append(
+                {
+                    "id": entity.id,
+                    "text": entity.text,
+                    "type": entity.type,
+                    "bbox": entity.bbox.to_dict(),
+                }
+            )
+    return {
+        "result_id": uuid4().hex[:12],
+        "state_id": state.state_id if state is not None else "",
+        "entities": entities,
+        "presented_order": order,
+        "timestamp": _utc_now(),
+        "source": source,
+        "clarification": clarification,
+    }
+
+
+def _result_set_order(result_set: dict[str, Any] | None) -> list[str]:
+    if not isinstance(result_set, dict):
+        return []
+    order = result_set.get("presented_order")
+    if isinstance(order, list) and order:
+        return [str(item) for item in order if str(item).strip()]
+    entities = result_set.get("entities")
+    if isinstance(entities, list):
+        return [
+            str(item.get("id") or "")
+            for item in entities
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ]
+    return []
+
+
+def bind_presented_screen_choice(
+    reference: str,
+    result_set: dict[str, Any] | None,
+) -> str | None:
+    """Map '1 / ilkini / ortadakini' onto the list the user was shown."""
+    order = _result_set_order(result_set)
+    if not order:
+        return None
+    features = extract_reference_features(reference)
+    index: int | None = None
+    if features.ordinal is not None:
+        index = features.ordinal
+    elif features.spatial is SpatialSlot.FIRST:
+        index = 0
+    elif features.spatial is SpatialSlot.LAST:
+        index = len(order) - 1
+    elif features.spatial is SpatialSlot.CENTER:
+        index = len(order) // 2
+    if index is None:
+        return None
+    if 0 <= index < len(order):
+        return order[index]
+    return None
 
 
 def _token_overlap(text: str, tokens: tuple[str, ...]) -> float:
@@ -134,17 +218,61 @@ def _session_evidence_allowed(features: ReferenceFeatures) -> bool:
     return True
 
 
+def _context_result_set(context: Any) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    raw = getattr(context, "last_screen_result_set", None)
+    if isinstance(raw, dict) and _result_set_order(raw):
+        return raw
+    if isinstance(context, dict):
+        nested = context.get("last_screen_result_set")
+        if isinstance(nested, dict) and _result_set_order(nested):
+            return nested
+        pending = context.get("pending_screen_resolve")
+        if isinstance(pending, dict):
+            order = pending.get("presented_order") or pending.get("candidates")
+            if isinstance(order, list) and order:
+                return {
+                    "presented_order": [str(item) for item in order],
+                    "state_id": str(pending.get("state_id") or ""),
+                    "source": "pending_screen_resolve",
+                }
+    return None
+
+
 def resolve_screen_reference(
     state: ScreenState | None,
     reference: str,
     *,
     session_entity_id: str | None = None,
     context: Any = None,
+    result_set: dict[str, Any] | None = None,
 ) -> EntityDecision:
     if state is None or not state.entities:
         return EntityDecision(confidence=Confidence.LOW)
 
     features = extract_reference_features(reference)
+    active_result = result_set if isinstance(result_set, dict) else _context_result_set(context)
+    bound_id = bind_presented_screen_choice(reference, active_result)
+    if bound_id:
+        entity = state.entity(bound_id)
+        if entity is not None:
+            return EntityDecision(
+                chosen=(bound_id,),
+                confidence=Confidence.HIGH,
+                score=POSITION_WEIGHT + SESSION_WEIGHT,
+                reason="presented_order",
+                candidates=tuple(_result_set_order(active_result)) or (bound_id,),
+            )
+        # Stale id still preferred when state was refreshed but order is known.
+        return EntityDecision(
+            chosen=(bound_id,),
+            confidence=Confidence.HIGH,
+            score=SESSION_WEIGHT,
+            reason="presented_order",
+            candidates=tuple(_result_set_order(active_result)) or (bound_id,),
+        )
+
     pool = entities_for_hints(state, features.type_hints)
     if features.type_hints == frozenset({"window"}):
         pool = [item for item in state.entities if item.type == "window"] or pool

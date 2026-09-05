@@ -179,6 +179,7 @@ class ConversationalContext:
     last_browser_url: str | None = None
     last_screen_state: dict[str, Any] | None = None
     last_screen_entity_id: str | None = None
+    last_screen_result_set: dict[str, Any] | None = None
     active_focus: ActiveFocus | None = None
     container_focus: ActiveFocus | None = None
     invalidated_targets: list[str] = field(default_factory=list)
@@ -239,6 +240,9 @@ class ConversationalContext:
             "last_browser_url": self.last_browser_url,
             "last_screen_state": dict(self.last_screen_state) if self.last_screen_state else None,
             "last_screen_entity_id": self.last_screen_entity_id,
+            "last_screen_result_set": dict(self.last_screen_result_set)
+            if self.last_screen_result_set
+            else None,
             "active_focus": self.active_focus.to_dict() if self.active_focus else None,
             "container_focus": self.container_focus.to_dict() if self.container_focus else None,
             "invalidated_targets": list(self.invalidated_targets),
@@ -319,6 +323,9 @@ class ConversationalContext:
             if isinstance(data.get("last_screen_state"), dict)
             else None,
             last_screen_entity_id=data.get("last_screen_entity_id"),
+            last_screen_result_set=dict(data.get("last_screen_result_set") or {})
+            if isinstance(data.get("last_screen_result_set"), dict)
+            else None,
             active_focus=ActiveFocus.from_dict(data["active_focus"])
             if isinstance(data.get("active_focus"), dict)
             else None,
@@ -753,6 +760,11 @@ class ConversationalContext:
     def update_from_tool(
         self, tool_name: str, output: Any, *, success: bool, verified: bool = False
     ) -> None:
+        # Ambiguous screen lists must stick even when resolve fails (needs_user).
+        if tool_name == "resolve_screen_entity" and isinstance(output, dict):
+            result_set = output.get("screen_result_set")
+            if isinstance(result_set, dict):
+                self.last_screen_result_set = dict(result_set)
         if not success:
             return
         if isinstance(output, dict) and output.get("verified") is True:
@@ -953,6 +965,9 @@ class ConversationalContext:
 
         elif tool_name == "resolve_screen_entity" and isinstance(output, dict):
             entity_id = str(output.get("entity_id") or "").strip()
+            result_set = output.get("screen_result_set")
+            if isinstance(result_set, dict):
+                self.last_screen_result_set = dict(result_set)
             if entity_id:
                 self.record_entity(
                     "screen_entity",
@@ -1012,6 +1027,15 @@ class ConversationalContext:
                 value = str(wc.get(key) or (refs or {}).get(key) or "").strip()
                 if value:
                     setattr(self, key, value)
+            result_set = wc.get("last_screen_result_set")
+            if isinstance(result_set, dict) and result_set:
+                self.last_screen_result_set = dict(result_set)
+            screen_state = wc.get("last_screen_state")
+            if isinstance(screen_state, dict) and screen_state:
+                self.last_screen_state = dict(screen_state)
+            entity_id = str(wc.get("last_screen_entity_id") or "").strip()
+            if entity_id:
+                self.last_screen_entity_id = entity_id
         for step in getattr(mission, "steps", []) or []:
             if step.status != MissionStepStatus.COMPLETED:
                 continue

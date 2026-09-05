@@ -403,7 +403,7 @@ async def test_open_path_verifier_rejects_a_missing_path(tmp_path):
         )
     )
     assert result.status == VerificationStatus.FAILED
-    assert result.method == "open_path_filesystem"
+    assert result.method == "open_path_action"
 
 
 @pytest.mark.asyncio

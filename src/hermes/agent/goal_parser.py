@@ -167,6 +167,13 @@ def _resolve_destination_path(text: str, lower: str) -> str:
     return ""
 
 
+def _looks_like_media_open(text: str) -> bool:
+    """True when the utterance is about opening media, not a system folder."""
+    from hermes.screen.reference import looks_like_media_open
+
+    return looks_like_media_open(text)
+
+
 def parse_goal(
     message: str,
     ctx: ConversationalContext | None = None,
@@ -191,7 +198,7 @@ def parse_goal(
     parsed.requires_ui = bool(_OPEN_UI.search(lower))
 
     source_alias = detect_known_folder_alias(text)
-    if source_alias:
+    if source_alias and not _looks_like_media_open(text):
         source_path = str((Path.home() / source_alias).resolve())
         parsed.source_location = source_path
         parsed.entities["source_location"] = source_path

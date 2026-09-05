@@ -474,7 +474,7 @@ def _extract_youtube_search_query(text: str) -> str | None:
 
 def _match_video_intent(text: str, lower: str) -> LocalIntent | None:
     wants_video = bool(
-        re.search(r"\b(video|youtube|youtu\.be|izle|oynat)\b", lower)
+        re.search(r"\b(video(?:yu|su|sunu)?|youtube|youtu\.be|izle|oynat)\b", lower)
         or ("youtube" in lower and re.search(r"\b(ara|aram|ac|aç)\b", lower))
     )
     if not wants_video:
@@ -485,6 +485,9 @@ def _match_video_intent(text: str, lower: str) -> LocalIntent | None:
 
     if is_screen_perception_task(text) or looks_like_screen_reference(text):
         return None
+    # Active screen / browser context: do not collapse to a YouTube search URL
+    # when the user is selecting something already on screen.
+    # (Folder alias stealing is handled separately below / in goal_parser.)
     url = _extract_youtube_url(text) or extract_url_hint(text)
     if url:
         href = url if "://" in url else f"https://{url}"
@@ -551,6 +554,14 @@ def _match_open_path(
         resolve_application,
         resolve_web_url,
     )
+    from hermes.screen.reference import (
+        is_screen_perception_task,
+        looks_like_media_open,
+        looks_like_screen_reference,
+    )
+
+    if looks_like_media_open(text) or is_screen_perception_task(text) or looks_like_screen_reference(text):
+        return None
 
     if is_web_or_app_open_message(text) and not has_explicit_filename(text):
         web_url = resolve_web_url(text)

@@ -380,11 +380,17 @@ async def test_process_message_ambiguous_waits_and_resume_rebinds(settings, tmp_
     assert "click" not in calls
     assert first
 
+    pending = mission.working_context.get("pending_screen_resolve") or {}
+    presented = list(pending.get("presented_order") or pending.get("candidates") or [])
+    assert len(presented) >= 2
+    expected_second = presented[1]
+
     second = await orch.process_message("ikincisini")
     resumed = orch._mission_store.load(mission.mission_id)
     assert resumed is not None
     resolve = next(step for step in resumed.steps if step.tool_name == "resolve_screen_entity")
     assert "ikincisini" in str(resolve.tool_arguments.get("reference") or "")
+    assert resolve.tool_arguments.get("session_entity_id") == expected_second
     assert calls.count("resolve_screen_entity") >= 2
     assert second
     clear_screen_state()

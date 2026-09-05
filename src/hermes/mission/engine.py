@@ -2312,8 +2312,14 @@ class MissionEngine:
                 mission.working_context["pending_screen_resolve"] = {
                     "step_id": step.step_id,
                     "reference": str(step.tool_arguments.get("reference") or ""),
-                    "candidates": output.get("candidates"),
+                    "candidates": output.get("presented_order") or output.get("candidates"),
+                    "presented_order": output.get("presented_order") or output.get("candidates"),
+                    "state_id": output.get("state_id")
+                    or (mission.working_context.get("last_screen_state") or {}).get("state_id"),
+                    "screen_result_set": output.get("screen_result_set"),
                 }
+                if isinstance(output.get("screen_result_set"), dict):
+                    mission.working_context["last_screen_result_set"] = output["screen_result_set"]
                 self._store.save(mission)
                 outcome.waiting_for_user = True
                 outcome.continue_plan = False
@@ -2545,19 +2551,6 @@ class MissionEngine:
         # observe callback; executor-level verification would duplicate it.
         return await self._executor.execute_tool_call(tool_call, run_id=run_id, verify=False)
 
-    def _bind_live_screen_resolve_args(
-        self, mission: Mission, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Prefer the latest observe snapshot over a stale singleton."""
-        args = dict(arguments or {})
-        latest = mission.working_context.get("last_screen_state")
-        if isinstance(latest, dict):
-            args["screen_state"] = latest
-        session_id = str(mission.working_context.get("last_screen_entity_id") or "").strip()
-        if session_id and not str(args.get("session_entity_id") or "").strip():
-            args["session_entity_id"] = session_id
-        return args
-
     def _apply_pending_screen_resolve(self, mission: Mission) -> None:
         pending = mission.working_context.get("pending_screen_resolve")
         if not isinstance(pending, dict):
@@ -2575,15 +2568,55 @@ class MissionEngine:
             user_text = str(mission.working_context.get("continuation_message") or "").strip()
         if not user_text:
             return
+        from hermes.screen.resolve import bind_presented_screen_choice
+
+        result_set = pending.get("screen_result_set")
+        if not isinstance(result_set, dict):
+            result_set = mission.working_context.get("last_screen_result_set")
+        if not isinstance(result_set, dict):
+            order = pending.get("presented_order") or pending.get("candidates")
+            if isinstance(order, list) and order:
+                result_set = {
+                    "presented_order": [str(item) for item in order],
+                    "state_id": str(pending.get("state_id") or ""),
+                    "source": "pending_screen_resolve",
+                }
+        bound_id = bind_presented_screen_choice(user_text, result_set if isinstance(result_set, dict) else None)
         original = str(pending.get("reference") or step.tool_arguments.get("reference") or "")
-        combined = f"{original} {user_text}".strip() if original else user_text
         step.tool_arguments = dict(step.tool_arguments or {})
-        step.tool_arguments["reference"] = combined
+        if bound_id:
+            # Bind to the presented list; do not re-open OCR ranking.
+            step.tool_arguments["reference"] = user_text
+            step.tool_arguments["session_entity_id"] = bound_id
+            if isinstance(result_set, dict):
+                step.tool_arguments["screen_result_set"] = result_set
+            mission.working_context["last_screen_entity_id"] = bound_id
+        else:
+            combined = f"{original} {user_text}".strip() if original else user_text
+            step.tool_arguments["reference"] = combined
+            if isinstance(result_set, dict):
+                step.tool_arguments["screen_result_set"] = result_set
         step.status = MissionStepStatus.PENDING
         step.execution_status = ""
         step.result_summary = ""
         step.completed_at = None
         mission.working_context.pop("pending_screen_resolve", None)
+
+    def _bind_live_screen_resolve_args(
+        self, mission: Mission, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Prefer the latest observe snapshot over a stale singleton."""
+        args = dict(arguments or {})
+        latest = mission.working_context.get("last_screen_state")
+        if isinstance(latest, dict):
+            args["screen_state"] = latest
+        session_id = str(mission.working_context.get("last_screen_entity_id") or "").strip()
+        if session_id and not str(args.get("session_entity_id") or "").strip():
+            args["session_entity_id"] = session_id
+        result_set = mission.working_context.get("last_screen_result_set")
+        if isinstance(result_set, dict) and "screen_result_set" not in args:
+            args["screen_result_set"] = result_set
+        return args
 
     def _remember_screen_output(self, mission: Mission, output: Any) -> None:
         if not isinstance(output, dict):

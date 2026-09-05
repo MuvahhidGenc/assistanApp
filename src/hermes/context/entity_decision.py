@@ -358,7 +358,7 @@ def score_candidates(
     return EntityDecision(
         confidence=Confidence.LOW,
         score=top.score,
-        candidates=all_ids,
+        candidates=tuple(item.identifier for item in ordered),
         clarification=_build_clarification(ordered, label=label, thresholds=thresholds),
     )
 

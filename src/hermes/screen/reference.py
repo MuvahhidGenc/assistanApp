@@ -209,6 +209,17 @@ def looks_like_screen_reference(message: str) -> bool:
     return False
 
 
+def looks_like_media_open(message: str) -> bool:
+    """Open-media utterance (video/youtube), not a filesystem folder open."""
+    features = extract_reference_features(message)
+    if "video" in features.type_hints:
+        return True
+    lower = features.raw.casefold()
+    if "youtube" in lower or "youtu.be" in lower:
+        return True
+    return bool(re.search(r"\b(izle|oynat)\b", lower))
+
+
 def is_screen_perception_task(message: str) -> bool:
     """A task that must observe the screen rather than search by URL/text."""
     features = extract_reference_features(message)

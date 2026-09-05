@@ -369,15 +369,26 @@ class ToolIntentMatcher:
 
             known = resolve_known_folder(text)
             if known and known.exists():
-                folder = str(known)
-                return ToolIntentResult(
-                    intent=LocalIntent(
-                        LocalToolRequest("open_path", {"path": folder}),
-                        "Klasor acilacak",
-                    ),
-                    resolved_references={"target_folder": folder},
-                    confidence=0.88,
+                from hermes.screen.reference import (
+                    is_screen_perception_task,
+                    looks_like_media_open,
+                    looks_like_screen_reference,
                 )
+
+                if not (
+                    looks_like_media_open(text)
+                    or is_screen_perception_task(text)
+                    or looks_like_screen_reference(text)
+                ):
+                    folder = str(known)
+                    return ToolIntentResult(
+                        intent=LocalIntent(
+                            LocalToolRequest("open_path", {"path": folder}),
+                            "Klasor acilacak",
+                        ),
+                        resolved_references={"target_folder": folder},
+                        confidence=0.88,
+                    )
 
             if _FOLDER_REF.search(text) or (
                 re.search(r"\bklas(?:o|ö)r", lower) and not _FILE_REF.search(text)

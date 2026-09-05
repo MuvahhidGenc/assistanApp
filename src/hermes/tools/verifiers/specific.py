@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -349,15 +350,17 @@ class OpenPathVerifier(BaseVerifier):
     tool_names = ("open_path",)
 
     async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        """Action verification: the open must be observed, not only the artifact."""
         raw = str(ctx.tool_arguments.get("path") or ctx.tool_arguments.get("target") or "").strip()
-        if isinstance(ctx.execution_output, dict):
-            actual = str(ctx.execution_output.get("path") or "").strip()
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        if isinstance(output, dict):
+            actual = str(output.get("path") or "").strip()
             if actual:
                 raw = actual
         if not raw:
             return VerificationResult(
                 status=VerificationStatus.FAILED,
-                method="open_path_filesystem",
+                method="open_path_action",
                 details={"reason": "path_missing"},
             )
         try:
@@ -368,32 +371,54 @@ class OpenPathVerifier(BaseVerifier):
         except Exception as exc:
             return VerificationResult(
                 status=VerificationStatus.FAILED,
-                method="open_path_filesystem",
+                method="open_path_action",
                 details={"reason": "path_unresolved", "error": str(exc)},
             )
         exists = target.exists()
+        action_verified = bool(output.get("verified")) or bool(output.get("reused"))
+        window_title = str(output.get("window_title") or "").strip()
         observation = Observation(
             source="filesystem",
-            data={"path": str(target), "exists": exists, "is_dir": target.is_dir()},
+            data={
+                "path": str(target),
+                "exists": exists,
+                "is_dir": target.is_dir() if exists else False,
+                "opened": output.get("opened"),
+                "reused": output.get("reused"),
+                "action_verified": action_verified,
+                "window_title": window_title or None,
+            },
         )
         if not ctx.execution_success:
             return VerificationResult(
                 status=VerificationStatus.FAILED,
-                method="open_path_filesystem",
+                method="open_path_action",
                 details={"reason": "execution_failed", "error": ctx.execution_error},
                 observation=observation,
             )
-        if exists:
+        if not exists:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="open_path_action",
+                details={"reason": "path_missing_on_disk", "path": str(target)},
+                observation=observation,
+            )
+        # Artifact exists is necessary but not sufficient for "open".
+        if action_verified or window_title:
             return VerificationResult(
                 status=VerificationStatus.VERIFIED,
-                method="open_path_filesystem",
-                details={"path": str(target)},
+                method="open_path_action",
+                details={"path": str(target), "window_title": window_title or None},
                 observation=observation,
             )
         return VerificationResult(
-            status=VerificationStatus.FAILED,
-            method="open_path_filesystem",
-            details={"reason": "path_missing_on_disk", "path": str(target)},
+            status=VerificationStatus.UNKNOWN,
+            method="open_path_action",
+            details={
+                "reason": "open_unconfirmed",
+                "path": str(target),
+                "artifact_ok": True,
+            },
             observation=observation,
         )
 
@@ -947,19 +972,11 @@ class ClickScreenVerifier(BaseVerifier):
             )
         output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
         prior_status = str(output.get("verification_status") or "").strip().casefold()
-        if prior_status in {"unknown", "failed"}:
-            status = (
-                VerificationStatus.UNKNOWN
-                if prior_status == "unknown"
-                else VerificationStatus.FAILED
-            )
+        if prior_status == "failed":
             return VerificationResult(
-                status=status,
+                status=VerificationStatus.FAILED,
                 method="screen_click_observe",
-                details={
-                    "reason": "target_unproven" if prior_status == "unknown" else "click_failed",
-                    "entity_id": output.get("entity_id"),
-                },
+                details={"reason": "click_failed", "entity_id": output.get("entity_id")},
             )
         pre_state = None
         try:
@@ -1001,11 +1018,13 @@ class ClickScreenVerifier(BaseVerifier):
         pre_title = str((pre_window or {}).get("title") or "")
         pre_url = str((pre_window or {}).get("url") or "")
         pre_text = str(pre_state.text if pre_state is not None else "")
+        post_state_id = str(payload.get("state_id") or "")
         ocr_changed = bool(pre_text) and pre_text.casefold() != post_text.casefold()
         destination_changed = bool(pre_title or pre_url) and (
             pre_title.casefold() != post_title.casefold()
             or pre_url.casefold() != post_url.casefold()
         )
+        state_changed = bool(pre_state_id and post_state_id and pre_state_id != post_state_id)
         evidence = {
             "click_x": args.get("x", output.get("x")),
             "click_y": args.get("y", output.get("y")),
@@ -1013,27 +1032,56 @@ class ClickScreenVerifier(BaseVerifier):
             "expected_text": expected_text,
             "bbox": args.get("bbox") or output.get("bbox"),
             "pre_state_id": pre_state_id,
-            "post_state_id": payload.get("state_id"),
+            "post_state_id": post_state_id,
             "pre_page_title": pre_title,
             "page_title": post_title,
             "pre_url": pre_url,
             "url": post_url,
             "ocr_changed": ocr_changed,
             "destination_changed": destination_changed,
+            "state_changed": state_changed,
             "reference": expected_ref,
             "post_click_text": post_text[:500],
         }
         target = expected_text.casefold()
         title_url = f"{post_title} {post_url}".casefold()
+        post_blob = f"{post_title} {post_url} {post_text}".casefold()
+        significant = [
+            token
+            for token in re.findall(r"[\wçğıöşüÇĞİÖŞÜ]{4,}", expected_text.casefold())
+            if token not in {"youtube", "google", "chrome", "video", "watch"}
+        ]
+        # Title/URL hits prove navigation; raw OCR still showing the list does not.
+        title_url_hits = sum(1 for token in significant if token in title_url)
+        token_hits = sum(1 for token in significant if token in post_blob)
+        entity_absent = (
+            bool(target)
+            and bool(pre_text)
+            and target in pre_text.casefold()
+            and target not in post_text.casefold()
+        )
+        needed_hits = max(1, min(2, len(significant))) if significant else 0
+
         if target and target in title_url:
             status = VerificationStatus.VERIFIED
             reason = "target_in_title_or_url"
-        elif target and destination_changed and (post_title or post_url) and target not in title_url:
+        elif significant and title_url_hits >= needed_hits:
+            status = VerificationStatus.VERIFIED
+            reason = "target_tokens_in_title_or_url"
+        elif destination_changed and significant and title_url_hits == 0 and (post_title or post_url):
             status = VerificationStatus.FAILED
             reason = "wrong_target_opened"
+        elif entity_absent and (ocr_changed or destination_changed or state_changed):
+            status = VerificationStatus.VERIFIED
+            reason = "target_left_view_after_click"
+        elif destination_changed and title_url_hits >= 1 and ocr_changed:
+            status = VerificationStatus.VERIFIED
+            reason = "destination_and_content_changed"
         else:
             status = VerificationStatus.UNKNOWN
             reason = "target_unproven"
+        evidence["title_url_hits"] = title_url_hits
+        evidence["token_hits"] = token_hits
         _logger.info(
             "screen_click_verify",
             status=status.value,
