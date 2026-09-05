@@ -32,8 +32,6 @@ from hermes.tools.registry import ToolRegistry
 
 # Type-specific session facts. Historical file paths are not dumped as `path`.
 _CONTEXT_INPUTS: tuple[tuple[str, str], ...] = (
-    ("url", "last_browser_url"),
-    ("url", "last_url"),
     ("app", "last_application"),
 )
 
@@ -263,6 +261,12 @@ class IntentRouter:
             )
 
         steps, unfillable = self._build_capability_steps(intent, pool)
+        if not steps and any(str(item).startswith("do_not:") for item in intent.constraints):
+            return RoutedPlan(
+                kind=RouteKind.CONVERSATION,
+                question=intent.reply or "Tamam, onu yapmayacagim.",
+                reason="yasaklanan_eylem",
+            )
 
         if self._shell_substitutes_for_a_gap(steps, unfillable):
             steps = [
@@ -321,6 +325,11 @@ class IntentRouter:
         the goal. Unfillable leftovers become a question, not a partial plan.
         """
         planned = _canonical_intent_steps(intent)
+        forbidden = {
+            item.split(":", 1)[1].strip()
+            for item in intent.constraints
+            if str(item).startswith("do_not:") and ":" in str(item)
+        }
 
         steps: list[MissionStep] = []
         unfillable: list[str] = []
@@ -328,6 +337,8 @@ class IntentRouter:
 
         for index, planned_step in enumerate(planned):
             capability = planned_step.capability
+            if capability in forbidden:
+                continue
             arguments = {**pool, **planned_step.inputs}
             selection = select_tool_for_capability(
                 self._registry, capability, arguments

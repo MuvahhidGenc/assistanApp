@@ -376,12 +376,18 @@ class AgentOrchestrator:
         from hermes.context.agent_context import promote_folder_in_context
         from hermes.context.task_state import (
             apply_format_to_path,
-            read_preserved_content,
+            preserved_task_content,
             tool_for_format,
         )
         from hermes.tools.manifest import LocalToolRequest
 
         params = relation.parameters
+        kept = preserved_task_content(params, incoming_message=message)
+        if kept:
+            params.content = kept
+        if not params.objective:
+            params.objective = conv_ctx.current_objective or params.topic
+        params.status = "active"
         conv_ctx.revise_task_parameters(params.to_dict())
         if relation.invalidate_path:
             conv_ctx.invalidate_target(relation.invalidate_path)
@@ -402,18 +408,28 @@ class AgentOrchestrator:
         conv_ctx.save()
 
         fmt = params.format
-        if fmt and fmt not in {"docx", "doc", "word"}:
-            destination = params.destination or conv_ctx.focus_container()
+        destination_only = not fmt and bool(params.destination or params.container)
+        if fmt:
+            destination = (
+                params.container
+                or params.destination
+                or conv_ctx.focus_container()
+            )
             if not destination:
                 text = "Hedef klasoru netlestirir misin?"
                 append_conversation_turn("user", message)
                 append_conversation_turn("assistant", text)
                 await self._set_status(AgentPhase.WAITING_FOR_USER, "Hedef klasor gerekli.")
                 return text
-            source = params.source_path
-            content = params.content or read_preserved_content(source)
+            source = params.source_path or params.target
+            content = preserved_task_content(params, incoming_message=message)
             if not content:
-                content = params.topic or conv_ctx.current_objective or "Belge"
+                return await self._finish_intent_turn(
+                    message,
+                    "Onceki belge icerigini koruyamadim; yeni metni soyler misin?",
+                    conv_ctx,
+                    AgentPhase.WAITING_FOR_USER,
+                )
             base = source or str(Path(destination) / (params.filename or "belge"))
             path = str(Path(destination) / Path(apply_format_to_path(base, fmt)).name)
             tool_name = tool_for_format(fmt)
@@ -438,16 +454,32 @@ class AgentOrchestrator:
                 text = f"{self.state.session_notice}\n\n{text}"
             append_conversation_turn("user", message)
             append_conversation_turn("assistant", text)
-            await self._set_status(AgentPhase.COMPLETED, "Gorev guncellendi.")
+            status = AgentPhase.COMPLETED
+            if "olusturamadim" in text.casefold() or "yazilamadi" in text.casefold():
+                status = AgentPhase.FAILED
+                conv_ctx.revise_task_parameters({"status": "failed"})
+            else:
+                conv_ctx.revise_task_parameters(
+                    {
+                        "status": "active",
+                        "format": fmt,
+                        "target": path,
+                        "source_path": path,
+                        "content": content,
+                        "container": str(destination),
+                    }
+                )
+            await self._set_status(status, "Gorev guncellendi." if status is AgentPhase.COMPLETED else "Dogrulama basarisiz.")
             return text
 
-        replay = relation.replay_goal or conv_ctx.current_objective
-        if replay and replay.strip().casefold() != message.strip().casefold():
-            self._skip_turn_relation = True
-            try:
-                return await self.process_message(replay, session_id=session_id)
-            finally:
-                self._skip_turn_relation = False
+        if destination_only:
+            replay = relation.replay_goal or conv_ctx.current_objective
+            if replay and replay.strip().casefold() != message.strip().casefold():
+                self._skip_turn_relation = True
+                try:
+                    return await self.process_message(replay, session_id=session_id)
+                finally:
+                    self._skip_turn_relation = False
         text = "Hedefi guncelledim."
         append_conversation_turn("user", message)
         append_conversation_turn("assistant", text)
@@ -522,6 +554,10 @@ class AgentOrchestrator:
         self, message: str, conv_ctx: Any, resolved_refs: dict[str, str]
     ) -> str | None:
         """Run a fully bound single local command without consulting the model."""
+        from hermes.intent.turn_relation import has_negative_polarity
+
+        if has_negative_polarity(message):
+            return None
         from hermes.agent.local_intent import (
             guess_file_action,
             guess_install_action,
@@ -621,11 +657,15 @@ class AgentOrchestrator:
         ]
 
         from hermes.context.entity_decision import Confidence
+        from hermes.intent.turn_relation import has_negative_polarity
         from hermes.screen.plan import build_catalog_search_intent, build_screen_perception_intent
 
-        screen_intent = build_screen_perception_intent(message, conv_ctx)
-        if screen_intent is None:
-            screen_intent = build_catalog_search_intent(message, conv_ctx)
+        if has_negative_polarity(message):
+            screen_intent = None
+        else:
+            screen_intent = build_screen_perception_intent(message, conv_ctx)
+            if screen_intent is None:
+                screen_intent = build_catalog_search_intent(message, conv_ctx)
         if screen_intent is not None:
             plan = router.route(screen_intent, confidence=Confidence.HIGH, context=conv_ctx)
             self._store_routing_trace(message, screen_intent, plan)
@@ -645,6 +685,13 @@ class AgentOrchestrator:
                 "intent_layer_unavailable",
                 error=(result.error or "")[:200],
             )
+            if has_negative_polarity(message):
+                return await self._finish_intent_turn(
+                    message,
+                    "Tamam, onu yapmayacagim.",
+                    conv_ctx,
+                    AgentPhase.COMPLETED,
+                )
             return None
 
         if result.intent is None:
@@ -672,7 +719,7 @@ class AgentOrchestrator:
             self._pending_new_objective = None
             return await self._handle_task_cancel(message, conv_ctx)
         if llm_relation.kind is TurnKind.NEW_TASK:
-            conv_ctx.set_current_objective(message)
+            conv_ctx.begin_new_task(message)
             self._pending_new_objective = None
 
         plan = router.route(result.intent, confidence=result.confidence, context=conv_ctx)
@@ -1074,7 +1121,6 @@ class AgentOrchestrator:
 
         from hermes.agent.mission_flow import (
             handle_mission_commands,
-            is_mission_resume_message,
         )
         from hermes.mission.models import MissionStatus
 
@@ -1099,11 +1145,7 @@ class AgentOrchestrator:
                     text = f"{self.state.session_notice}\n\n{text}"
                 return text
 
-        from hermes.agent.mission_continuation import (
-            PendingReplyKind,
-            classify_pending_user_message,
-            detect_mission_continuation,
-        )
+        from hermes.agent.mission_continuation import detect_mission_continuation
 
         continuation = detect_mission_continuation(message, conv_ctx, self._mission_store)
         if continuation.continue_mission_id and continuation.is_continuation:
@@ -1132,28 +1174,26 @@ class AgentOrchestrator:
                 text = f"{self.state.session_notice}\n\n{text}"
             return text
 
+        # Waiting already decided by classify_turn_relation above.
+        # A NEW_TASK here only snapshots and releases; it does not re-interpret.
         active_mission = self._mission_store.load_active()
         if active_mission and active_mission.status == MissionStatus.WAITING_FOR_USER:
-            pending_kind = classify_pending_user_message(message, active_mission)
-            if pending_kind is PendingReplyKind.CONTINUE and not is_mission_resume_message(
-                message
-            ):
-                self._mission_store.resume_from_user(active_mission.mission_id, message)
-                text = await self._continue_mission(active_mission.mission_id, message, conv_ctx)
-                if self.state.session_notice and self.state.session_notice not in text:
-                    text = f"{self.state.session_notice}\n\n{text}"
-                return text
-            if pending_kind is PendingReplyKind.NEW_TASK:
-                self._release_waiting_mission(active_mission.mission_id, conv_ctx, message)
+            self._release_waiting_mission(active_mission.mission_id, conv_ctx, message)
 
         self._suspend_active_mission_if_needed(message, conv_ctx, reason="Kullanici yeni gorev istedi")
+
+        from hermes.intent.turn_relation import has_negative_polarity
 
         resolution = ReferenceResolver().resolve(message, conv_ctx)
         from hermes.agent.application_catalog import is_web_or_app_open_message
         from hermes.agent.task_planner import is_multi_step_message
 
         bound_single = not is_multi_step_message(message)
-        if is_web_or_app_open_message(message) and bound_single:
+        if has_negative_polarity(message) or (
+            is_web_or_app_open_message(message) and bound_single
+        ):
+            from hermes.context.reference_resolver import ResolutionResult
+
             resolution = ResolutionResult(is_new_task=True)
 
         if (
@@ -1212,7 +1252,12 @@ class AgentOrchestrator:
             conv_ctx.save()
             await self._set_status(AgentPhase.UNDERSTANDING, "Netlestirmem gerekiyor.")
             return text
-        if bound_single and goal.intent and self._local_intent_is_complete(goal.intent):
+        if (
+            bound_single
+            and goal.intent
+            and self._local_intent_is_complete(goal.intent)
+            and not has_negative_polarity(message)
+        ):
             await self._set_status(AgentPhase.UNDERSTANDING, format_understanding_status())
             text = await self._execute_resolved_local_intent(
                 goal.intent,
@@ -1242,6 +1287,14 @@ class AgentOrchestrator:
         intent_reply = await self._handle_with_intent(message, conv_ctx)
         if intent_reply is not None:
             return intent_reply
+
+        if has_negative_polarity(message):
+            return await self._finish_intent_turn(
+                message,
+                "Tamam, onu yapmayacagim.",
+                conv_ctx,
+                AgentPhase.COMPLETED,
+            )
 
         return self._legacy_reply(
             await self._run_legacy_fallback(
@@ -1902,10 +1955,10 @@ class AgentOrchestrator:
         refs = dict(resolved_references or {})
         pending = getattr(self, "_pending_new_objective", None)
         if pending:
-            conv_ctx.set_current_objective(pending)
+            conv_ctx.begin_new_task(pending)
             self._pending_new_objective = None
         elif message and not conv_ctx.current_objective:
-            conv_ctx.set_current_objective(message)
+            conv_ctx.begin_new_task(message)
 
         if req.name in ("create_file", "write_file"):
             from hermes.context.file_intent import FileIntentKind, classify_file_intent

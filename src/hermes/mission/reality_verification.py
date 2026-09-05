@@ -172,6 +172,127 @@ def safe_move_file(source: Path, destination: Path) -> dict[str, Any]:
     }
 
 
+def extract_docx_text(path: str | Path) -> str:
+    target = Path(str(path))
+    if not target.is_file():
+        return ""
+    try:
+        from docx import Document
+
+        return "\n\n".join(
+            para.text.strip()
+            for para in Document(str(target)).paragraphs
+            if para.text.strip()
+        )
+    except Exception:
+        return ""
+
+
+def verify_docx_document(path: str | Path, *, expected_text: str = "") -> dict[str, Any]:
+    target = Path(str(path))
+    if not target.is_file():
+        return {"ok": False, "reason": "file_missing", "path": str(target)}
+    raw = target.read_bytes()[:8]
+    if raw[:2] != b"PK":
+        return {"ok": False, "reason": "not_ooxml_zip", "path": str(target)}
+    try:
+        import zipfile
+
+        with zipfile.ZipFile(target) as archive:
+            names = set(archive.namelist())
+        if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+            return {"ok": False, "reason": "not_docx_package", "path": str(target)}
+    except Exception as exc:
+        return {"ok": False, "reason": f"zip_unreadable:{exc}", "path": str(target)}
+    text = extract_docx_text(target)
+    if expected_text and expected_text.casefold() not in text.casefold():
+        return {"ok": False, "reason": "content_missing", "path": str(target), "text": text[:200]}
+    return {"ok": True, "path": str(target), "text": text, "pages": 1}
+
+
+def verify_pdf_document(path: str | Path, *, expected_text: str = "") -> dict[str, Any]:
+    target = Path(str(path))
+    if not target.is_file():
+        return {"ok": False, "reason": "file_missing", "path": str(target)}
+    header = target.read_bytes()[:5]
+    if header != b"%PDF-":
+        return {"ok": False, "reason": "missing_pdf_header", "path": str(target)}
+    pages = 0
+    text = ""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(target))
+        pages = len(reader.pages)
+        if pages < 1:
+            return {"ok": False, "reason": "no_pages", "path": str(target)}
+        chunks: list[str] = []
+        for page in reader.pages[:20]:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                chunks.append(page_text.strip())
+        text = "\n".join(chunks).strip()
+    except ImportError:
+        raw = target.read_bytes()
+        if b"startxref" not in raw or b"%%EOF" not in raw:
+            return {"ok": False, "reason": "incomplete_pdf_structure", "path": str(target)}
+        pages = max(1, raw.count(b"/Type /Page"))
+        extracted = extract_pdf_text(target)
+        text = extracted.text if extracted.ok else ""
+        if pages < 1:
+            return {"ok": False, "reason": "no_pages", "path": str(target)}
+    except Exception as exc:
+        return {"ok": False, "reason": f"unreadable_pdf:{exc}", "path": str(target)}
+    if expected_text and expected_text.casefold() not in text.casefold():
+        return {
+            "ok": False,
+            "reason": "content_missing",
+            "path": str(target),
+            "pages": pages,
+            "text": text[:200],
+        }
+    return {"ok": True, "path": str(target), "pages": pages, "text": text}
+
+
+def is_office_lock_name(name: str) -> bool:
+    token = (name or "").casefold()
+    if token.startswith(".~lock.") or token.startswith("~$"):
+        return True
+    if token.endswith(".lock") or token.endswith(".lock#"):
+        return True
+    return token.startswith(".~") and "#" in token
+
+
+def office_lock_stem_hint(name: str) -> str:
+    """Base document stem from a lock or document name (ignores (1) copies)."""
+    import re
+
+    stem = name or ""
+    for token in (".~lock.", "~$", "#"):
+        stem = stem.replace(token, "")
+    stem = Path(stem).stem
+    match = re.match(r"([^\s(]+)", stem.strip())
+    return match.group(1) if match else stem.strip()
+
+
+def find_office_lock_files(folder: Path, stem_hint: str = "") -> list[Path]:
+    if not folder.is_dir():
+        return []
+    hint = "".join((stem_hint or "").casefold().split())
+    if hint:
+        hint = office_lock_stem_hint(hint).casefold()
+    found: list[Path] = []
+    for item in folder.iterdir():
+        if not item.is_file() or not is_office_lock_name(item.name):
+            continue
+        compact = "".join(item.name.casefold().split())
+        base = office_lock_stem_hint(item.name).casefold()
+        if hint and hint not in compact and hint not in base and base not in hint:
+            continue
+        found.append(item)
+    return found
+
+
 def extract_pdf_text(path: str | Path) -> PdfExtractResult:
     target = Path(str(path))
     if not target.is_file():
@@ -189,7 +310,8 @@ def extract_pdf_text(path: str | Path) -> PdfExtractResult:
             text = "\n".join(chunks).strip()
             if text:
                 return PdfExtractResult(path=str(target.resolve()), text=text[:12000], ok=True)
-        except ImportError:
+        except Exception:
+            # Truncated / fake PDFs must fall through to byte heuristics.
             pass
         raw = target.read_bytes()[:500_000]
         text_parts = re.findall(rb"\(([^()\\]{3,200})\)", raw)

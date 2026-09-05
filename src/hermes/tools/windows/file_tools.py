@@ -151,6 +151,17 @@ class WriteFileTool(BaseTool):
             return ToolExecutionResult(success=False, error="path gerekli")
         try:
             target = resolve_user_path(raw_path)
+            suffix = target.suffix.casefold()
+            if suffix == ".docx":
+                word_tool = CreateWordDocumentTool()
+                return await word_tool.execute(
+                    path=str(target),
+                    content=text,
+                    title=str(kwargs.get("title") or ""),
+                    **{key: value for key, value in kwargs.items() if key != "title"},
+                )
+            if suffix == ".pdf":
+                return await run_in_thread(_write_real_pdf, target, text)
             from hermes.tools.windows.input_backend import wants_modify_existing, wants_recreate
 
             user_message = str(kwargs.get("user_message") or "")
@@ -211,6 +222,98 @@ class WriteFileTool(BaseTool):
         }
 
 
+def _pdf_escape(text: str) -> str:
+    translit = {
+        "ı": "i",
+        "İ": "I",
+        "ğ": "g",
+        "Ğ": "G",
+        "ş": "s",
+        "Ş": "S",
+        "ç": "c",
+        "Ç": "C",
+        "ö": "o",
+        "Ö": "O",
+        "ü": "u",
+        "Ü": "U",
+    }
+    cleaned = "".join(translit.get(char, char) for char in text)
+    ascii_text = cleaned.encode("latin-1", errors="replace").decode("latin-1")
+    return ascii_text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _write_real_pdf(target: Path, text: str) -> ToolExecutionResult:
+    from hermes.mission.reality_verification import verify_pdf_document
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    body = (text or "").strip() or "Belge"
+    lines = []
+    for paragraph in body.replace("\r\n", "\n").split("\n"):
+        chunk = paragraph.strip() or " "
+        while chunk:
+            lines.append(chunk[:90])
+            chunk = chunk[90:]
+    if not lines:
+        lines = ["Belge"]
+    commands = ["BT", "/F1 12 Tf", "50 780 Td"]
+    for index, line in enumerate(lines[:60]):
+        if index:
+            commands.append("0 -16 Td")
+        commands.append(f"({_pdf_escape(line)}) Tj")
+    commands.append("ET")
+    stream = "\n".join(commands).encode("latin-1", errors="replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+        ),
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, payload in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode("ascii"))
+        output.extend(payload)
+        output.extend(b"\nendobj\n")
+    xref_at = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_at}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    target.write_bytes(bytes(output))
+    check = verify_pdf_document(target, expected_text="")
+    if not check.get("ok"):
+        return ToolExecutionResult(
+            success=False,
+            error=f"Gecerli PDF yazilamadi: {check.get('reason')}",
+            output={"path": str(target), "verified": False, **check},
+            verified=False,
+        )
+    stat = target.stat()
+    return ToolExecutionResult(
+        success=True,
+        output={
+            "path": str(target),
+            "size": stat.st_size,
+            "exists": True,
+            "pages": check.get("pages"),
+            "format": "pdf",
+            "verified_listing": _dir_listing(target.parent, limit=20),
+        },
+        verified=True,
+    )
+
+
 class CreateWordDocumentTool(BaseTool):
     name = "create_word_document"
     description = "Word (.docx) dosyasi olusturur ve paragraf/metin ekler."
@@ -246,18 +349,29 @@ class CreateWordDocumentTool(BaseTool):
             if not paragraphs and not heading:
                 doc.add_paragraph("")
             doc.save(str(target))
+            from hermes.mission.reality_verification import verify_docx_document
+
+            check = verify_docx_document(target)
             stat = target.stat()
             return {
                 "path": str(target),
                 "size": stat.st_size,
                 "exists": target.is_file(),
                 "paragraph_count": len(paragraphs),
+                "format_ok": bool(check.get("ok")),
+                "format_reason": check.get("reason"),
                 "verified_listing": _dir_listing(target.parent, limit=20),
             }
 
         try:
             data = await run_in_thread(_build)
-            return ToolExecutionResult(success=True, output=data, verified=bool(data.get("exists")))
+            format_ok = bool(data.get("format_ok") and data.get("exists"))
+            return ToolExecutionResult(
+                success=format_ok,
+                output=data,
+                error="" if format_ok else f"Gecerli DOCX yazilamadi: {data.get('format_reason')}",
+                verified=format_ok,
+            )
         except ImportError:
             return ToolExecutionResult(
                 success=False,
@@ -517,9 +631,55 @@ class DeletePathTool(BaseTool):
         if not raw:
             return ToolExecutionResult(success=False, error="path gerekli")
         try:
+            from hermes.mission.reality_verification import (
+                find_office_lock_files,
+                is_office_lock_name,
+                office_lock_stem_hint,
+            )
+
             target = resolve_user_path(raw)
             parent = target.parent
             name = target.name
+            lock_targets: list[Path] = []
+            if is_office_lock_name(name) or not target.exists():
+                stem = office_lock_stem_hint(name)
+                lock_targets = find_office_lock_files(parent, stem)
+                if target.exists() and is_office_lock_name(name):
+                    lock_targets = [target, *[item for item in lock_targets if item != target]]
+            elif target.exists() and target.is_file() and not is_office_lock_name(name):
+                siblings = find_office_lock_files(parent, office_lock_stem_hint(target.name))
+                if siblings:
+                    lock_targets = siblings
+            if lock_targets:
+                deleted: list[str] = []
+                remaining: list[str] = []
+                errors: list[str] = []
+                for item in lock_targets:
+                    try:
+                        item.unlink()
+                    except OSError as exc:
+                        errors.append(f"{item.name}: {exc}")
+                    if item.exists():
+                        remaining.append(item.name)
+                    else:
+                        deleted.append(item.name)
+                cleaned = bool(deleted) and not remaining
+                return ToolExecutionResult(
+                    success=cleaned,
+                    error="" if cleaned else (
+                        "Kilit dosyalari temizlenemedi: " + "; ".join(errors + remaining)
+                        if remaining or errors
+                        else "Kilit dosyasi bulunamadi"
+                    ),
+                    output={
+                        "path": str(parent),
+                        "deleted": deleted,
+                        "remaining": remaining,
+                        "exists_after": bool(remaining),
+                        "verified_listing": _dir_listing(parent, limit=20) if parent.is_dir() else [],
+                    },
+                    verified=cleaned,
+                )
             if not target.exists():
                 return ToolExecutionResult(success=False, error=f"Yol bulunamadi: {target}")
             if target.is_dir():

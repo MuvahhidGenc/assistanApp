@@ -33,6 +33,7 @@ dependencies = [
     "opencv-python-headless>=4.10",
     "pytesseract>=0.3.13",
     "python-docx>=1.1.0",
+    "pypdf>=5.0",
     "customtkinter>=5.2",
     "pystray>=0.19",
     "winotify>=1.1",

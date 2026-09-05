@@ -459,7 +459,7 @@ class OpenAppVerifier(BaseVerifier):
 
 
 class WriteFileVerifier(BaseVerifier):
-    tool_names = ("write_file",)
+    tool_names = ("write_file", "create_word_document")
 
     async def verify(self, ctx: VerifierContext) -> VerificationResult:
         if not ctx.execution_success:
@@ -489,6 +489,34 @@ class WriteFileVerifier(BaseVerifier):
                 details={"reason": "path_unresolvable"},
             )
         exists = target.is_file()
+        suffix = target.suffix.casefold()
+        if exists and suffix in {".pdf", ".docx"}:
+            from hermes.mission.reality_verification import verify_docx_document, verify_pdf_document
+
+            expected = str(ctx.tool_arguments.get("content") or "").strip()
+            needle = expected[:40] if expected and "\n" not in expected[:40] else ""
+            check = (
+                verify_pdf_document(target, expected_text=needle)
+                if suffix == ".pdf"
+                else verify_docx_document(target, expected_text="")
+            )
+            observation = Observation(
+                source="filesystem",
+                data={"path": str(target), "format_check": check},
+            )
+            if not check.get("ok"):
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    method="document_format",
+                    details={"reason": check.get("reason"), "path": str(target)},
+                    observation=observation,
+                )
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="document_format",
+                details={"path": str(target), "pages": check.get("pages")},
+                observation=observation,
+            )
         content = ctx.tool_arguments.get("content")
         content_hash: str | None = None
         hash_match: bool | None = None
@@ -917,6 +945,22 @@ class ClickScreenVerifier(BaseVerifier):
                 method="screen_click_observe",
                 details={"reason": "execution_failed", "error": ctx.execution_error},
             )
+        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
+        prior_status = str(output.get("verification_status") or "").strip().casefold()
+        if prior_status in {"unknown", "failed"}:
+            status = (
+                VerificationStatus.UNKNOWN
+                if prior_status == "unknown"
+                else VerificationStatus.FAILED
+            )
+            return VerificationResult(
+                status=status,
+                method="screen_click_observe",
+                details={
+                    "reason": "target_unproven" if prior_status == "unknown" else "click_failed",
+                    "entity_id": output.get("entity_id"),
+                },
+            )
         pre_state = None
         try:
             from hermes.screen.store import last_screen_state
@@ -934,7 +978,6 @@ class ClickScreenVerifier(BaseVerifier):
                 details={"reason": "observe_unavailable"},
             )
         args = ctx.tool_arguments if isinstance(ctx.tool_arguments, dict) else {}
-        output = ctx.execution_output if isinstance(ctx.execution_output, dict) else {}
         payload = data["payload"]
         window = payload.get("window") if isinstance(payload.get("window"), dict) else {}
         expected_text = str(args.get("text") or output.get("text") or "").strip()

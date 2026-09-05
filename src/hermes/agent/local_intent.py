@@ -44,6 +44,11 @@ def match_local_intent(message: str) -> LocalIntent | None:
     if not text:
         return None
 
+    from hermes.intent.turn_relation import has_negative_polarity
+
+    if has_negative_polarity(text):
+        return None
+
     from hermes.agent.server_tasks import should_defer_to_server
     from hermes.agent.task_planner import is_multi_step_message, plan_local_sequence
 
@@ -251,6 +256,11 @@ def guess_local_action(
     conv_ctx: object | None = None,
 ) -> LocalIntent | None:
     """Route PC commands to local tools before asking Hermes."""
+    from hermes.intent.turn_relation import has_negative_polarity
+
+    if has_negative_polarity(message or ""):
+        return None
+
     file_intent = guess_file_action(
         message,
         resolved_references=resolved_references,

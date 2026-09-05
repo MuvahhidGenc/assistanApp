@@ -31,6 +31,17 @@ class TurnRelation:
     invalidate_path: str | None = None
 
 
+def has_negative_polarity(message: str) -> bool:
+    """Prohibitive morphology on the main verb, not a per-site synonym list."""
+    tokens = [item for item in (message or "").replace("'", " ").split() if item]
+    if not tokens:
+        return False
+    last = tokens[-1].casefold().strip(".,!?")
+    if last in {"ama", "ama,", "değil", "degil"}:
+        return False
+    return last.endswith("ma") or last.endswith("me")
+
+
 def classify_turn_relation(
     message: str,
     ctx: Any,
@@ -58,6 +69,8 @@ def classify_turn_relation(
     if llm is not None:
         return llm
 
+    # Waiting: cancel / revise own the turn before spatial continue, so
+    # "onu test12 icine yap" is not swallowed as a pending choice answer.
     if waiting_mission is not None:
         from hermes.agent.mission_continuation import (
             PendingReplyKind,
@@ -67,13 +80,18 @@ def classify_turn_relation(
         pending = classify_pending_user_message(text, waiting_mission)
         if pending is PendingReplyKind.CANCEL:
             return TurnRelation(kind=TurnKind.CANCEL, source="pending_cancel")
+        revision = _structural_revision(text, ctx, parsed)
+        if revision is not None:
+            return revision
         if pending is PendingReplyKind.CONTINUE:
             return TurnRelation(kind=TurnKind.CONTINUE, source="pending_continue")
         if pending is PendingReplyKind.NEW_TASK:
-            revision = _structural_revision(text, ctx, parsed)
-            if revision is not None:
-                return revision
             return TurnRelation(kind=TurnKind.NEW_TASK, source="pending_new_task")
+
+    from hermes.screen.reference import is_screen_perception_task, looks_like_screen_reference
+
+    if looks_like_screen_reference(text) or is_screen_perception_task(text):
+        return TurnRelation(kind=TurnKind.NEW_TASK, source="screen_task")
 
     revision = _structural_revision(text, ctx, parsed)
     if revision is not None:
@@ -155,16 +173,15 @@ def _structural_revision(text: str, ctx: Any, parsed: Any) -> TurnRelation | Non
         fmt = normalize_format(
             getattr(parsed, "file_type", "") or (getattr(parsed, "constraints", {}) or {}).get("file_type")
         )
-        destination = str(getattr(parsed, "destination", "") or "")
         actions = [str(item) for item in (getattr(parsed, "required_actions", None) or [])]
         operations = [str(item) for item in (getattr(parsed, "operations", None) or [])]
     else:
         actions = []
         operations = []
 
+    # Parsed system folders (Videos from "videolardan") are not task containers.
     known_folder = _mentioned_known_folder(text, ctx)
-    if known_folder:
-        destination = known_folder
+    destination = known_folder or ""
 
     action_names = {str(item).split(".")[-1] for item in actions}
     if action_names & {"open", "rename", "list", "delete", "copy", "move", "search"}:
@@ -172,9 +189,19 @@ def _structural_revision(text: str, ctx: Any, parsed: Any) -> TurnRelation | Non
     if "create_folder" in operations and destination and not known_folder:
         return None
 
+    current_fmt = ""
+    existing = getattr(ctx, "task_parameters", None)
+    if isinstance(existing, dict):
+        current_fmt = normalize_format(existing.get("format"))
+    elif existing is not None:
+        current_fmt = normalize_format(getattr(existing, "format", ""))
+
     constraint_only = (not actions or action_names <= {"unknown"}) and bool(fmt or destination)
-    format_on_document = bool(fmt) and _document_task(ctx) and not action_names & {"create"}
+    format_changed = bool(fmt) and fmt != current_fmt
+    format_on_document = format_changed and _document_task(ctx) and not action_names & {"create"}
     retarget = bool(known_folder) and not action_names & {"create"}
+    if constraint_only and fmt and fmt == current_fmt and not destination:
+        return None
 
     if not (constraint_only or format_on_document or retarget):
         return None
@@ -215,8 +242,8 @@ def _fill_revision_defaults(params: TaskParameters, ctx: Any) -> TaskParameters:
         focus = getattr(ctx, "active_focus", None)
         if focus is not None and getattr(focus, "type", "") == "file":
             merged.source_path = str(focus.identifier)
-        elif getattr(ctx, "last_created_file", None):
-            merged.source_path = str(ctx.last_created_file)
+        elif merged.target:
+            merged.source_path = merged.target
     if not merged.filename and merged.source_path:
         merged.filename = Path(merged.source_path).name
     return merged

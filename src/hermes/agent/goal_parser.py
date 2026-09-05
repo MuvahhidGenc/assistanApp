@@ -137,7 +137,10 @@ _STEP_SPLIT = re.compile(
     re.IGNORECASE,
 )
 _OPEN_UI = re.compile(r"\b(ac|aç|open|goster|göster|baslat|başlat)\b", re.IGNORECASE)
-_FILE_TYPE = re.compile(r"\b(pdf|txt|docx?|png|jpg|jpeg|resim|gorsel|görsel)\b", re.IGNORECASE)
+_FILE_TYPE = re.compile(
+    r"\b(pdf|txt|docx?|word|excel|xlsx?|png|jpg|jpeg|resim|gorsel|görsel)\b",
+    re.IGNORECASE,
+)
 _WHEN_FILTER = re.compile(r"\b(dun|dün|bugun|bugün|son\s+\d+\s+gun|son\s+\d+\s+gün)\b", re.IGNORECASE)
 _OUTPUT_FILE = re.compile(
     r"\b([A-Za-z0-9_\-\.]+\.(?:txt|pdf|docx?|md))\b",
@@ -231,10 +234,17 @@ def parse_goal(
 
     type_match = _FILE_TYPE.search(lower)
     if type_match and not parsed.file_type:
-        parsed.constraints["file_type"] = type_match.group(1).casefold()
-        parsed.file_type = type_match.group(1).casefold()
+        from hermes.context.task_state import normalize_format
+
+        raw_type = type_match.group(1).casefold()
+        parsed.file_type = normalize_format(raw_type) or raw_type
+        parsed.constraints["file_type"] = parsed.file_type
         if parsed.file_type == "pdf" and not parsed.file_pattern:
             parsed.file_pattern = "*.pdf"
+        elif parsed.file_type == "docx" and not parsed.file_pattern:
+            parsed.file_pattern = "*.docx"
+        elif parsed.file_type == "xlsx" and not parsed.file_pattern:
+            parsed.file_pattern = "*.xlsx"
 
     when_match = _WHEN_FILTER.search(lower)
     if when_match:

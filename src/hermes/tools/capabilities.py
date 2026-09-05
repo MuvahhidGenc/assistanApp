@@ -35,6 +35,7 @@ class Capability(StrEnum):
     FILESYSTEM_INSPECT = "filesystem.inspect"
 
     BROWSER_NAVIGATE = "browser.navigate"
+    BROWSER_BACK = "browser.back"
     BROWSER_READ = "browser.read"
     BROWSER_CLICK = "browser.click"
     BROWSER_OPEN = "browser.open"
@@ -99,7 +100,7 @@ _TOOL_CAPABILITIES: dict[str, tuple[Capability, ...]] = {
     "click_text": (Capability.SCREEN_CLICK, Capability.BROWSER_CLICK),
     "resolve_screen_entity": (Capability.SCREEN_RESOLVE,),
     "show_desktop": (Capability.WINDOW_MANAGE,),
-    "browser_nav": (Capability.BROWSER_NAVIGATE,),
+    "browser_nav": (Capability.BROWSER_NAVIGATE, Capability.BROWSER_BACK),
     # pc_actions
     "set_dns": (Capability.NETWORK_CONFIGURE,),
     "list_windows": (Capability.WINDOW_INSPECT,),
@@ -283,6 +284,9 @@ def select_tool_for_capability(
     write_file when both path and content were given).
     """
     payload = dict(inputs or {})
+    if str(capability) == "browser.back":
+        payload.setdefault("action", "back")
+    path = str(payload.get("path") or "")
     best: CapabilitySelection | None = None
     best_coverage = -1
     best_arity = 10**9
@@ -301,8 +305,19 @@ def select_tool_for_capability(
         # A path with a filename is a file write, not a folder create, even
         # when content has not been supplied yet. create_folder also offers
         # filesystem.write and would otherwise win on a lone `path`.
-        path = str(payload.get("path") or "")
         looks_like_file = "." in Path(path).name and not Path(path).name.startswith(".")
+        if (
+            str(capability) in {"document.create", "document.write"}
+            and path.casefold().endswith(".docx")
+            and definition.name == "write_file"
+        ):
+            continue
+        if (
+            str(capability) in {"document.create", "document.write"}
+            and path.casefold().endswith(".pdf")
+            and definition.name == "create_word_document"
+        ):
+            continue
         properties = schema.get("properties") or {}
         if (
             str(capability) == "filesystem.write"

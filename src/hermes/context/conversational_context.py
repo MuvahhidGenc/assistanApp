@@ -169,6 +169,7 @@ class ConversationalContext:
     current_task: str | None = None
     current_objective: str | None = None
     task_parameters: dict[str, str] = field(default_factory=dict)
+    previous_task_snapshot: dict[str, Any] = field(default_factory=dict)
     last_successful_mission_id: str | None = None
     last_failed_mission_id: str | None = None
     last_verified_file: str | None = None
@@ -228,6 +229,7 @@ class ConversationalContext:
             "current_task": self.current_task,
             "current_objective": self.current_objective,
             "task_parameters": dict(self.task_parameters),
+            "previous_task_snapshot": dict(self.previous_task_snapshot),
             "last_successful_mission_id": self.last_successful_mission_id,
             "last_failed_mission_id": self.last_failed_mission_id,
             "last_verified_file": self.last_verified_file,
@@ -302,6 +304,9 @@ class ConversationalContext:
                 if str(value).strip()
             }
             if isinstance(data.get("task_parameters"), dict)
+            else {},
+            previous_task_snapshot=dict(data.get("previous_task_snapshot") or {})
+            if isinstance(data.get("previous_task_snapshot"), dict)
             else {},
             last_successful_mission_id=data.get("last_successful_mission_id"),
             last_failed_mission_id=data.get("last_failed_mission_id"),
@@ -425,6 +430,7 @@ class ConversationalContext:
             "container_focus": self.container_focus.to_dict() if self.container_focus else None,
             "current_objective": self.current_objective,
             "task_parameters": dict(self.task_parameters),
+            "previous_task_snapshot": dict(self.previous_task_snapshot),
         }
 
     def save(self) -> None:
@@ -670,6 +676,25 @@ class ConversationalContext:
         self.current_task = text[:500] if text else None
         self.touch()
 
+    def snapshot_current_task(self) -> dict[str, Any]:
+        payload = {
+            "objective": self.current_objective,
+            "task_parameters": dict(self.task_parameters),
+            "active_mission_id": self.active_mission_id,
+        }
+        if self.current_objective or self.task_parameters:
+            self.previous_task_snapshot = payload
+        return dict(self.previous_task_snapshot)
+
+    def begin_new_task(self, objective: str | None) -> None:
+        """Start an independent task; snapshot prior params so they cannot leak."""
+        self.snapshot_current_task()
+        text = (objective or "").strip()
+        self.current_objective = text[:500] if text else None
+        self.current_task = text[:500] if text else None
+        self.task_parameters = {}
+        self.touch()
+
     def set_current_objective(self, objective: str | None) -> None:
         text = (objective or "").strip()
         self.current_objective = text[:500] if text else None
@@ -772,13 +797,17 @@ class ConversationalContext:
                 self.recent_folders = _dedupe_append(self.recent_folders, self.active_folder)
                 self.record_entity("file", file_path, label=Path(file_path).name)
                 self.commit_focus("file", file_path, container=self.active_folder, source=tool_name)
-                from hermes.context.task_state import parameters_from_path
+                from hermes.context.task_state import TaskParameters, parameters_from_path, read_preserved_content
 
+                existing = TaskParameters.from_dict(self.task_parameters)
+                kept = existing.content or read_preserved_content(file_path)
                 self.revise_task_parameters(
                     parameters_from_path(
                         file_path,
                         action="create_document",
-                        topic=self.current_objective or "",
+                        topic=existing.topic or existing.objective or "",
+                        content=kept,
+                        objective=existing.objective or self.current_objective or "",
                     ).to_dict()
                 )
 

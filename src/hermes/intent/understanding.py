@@ -112,7 +112,14 @@ Kurallar:
   (format, hedef klasor, icerik) revise'dir; ayni gorevi surdurmek continue;
   iptal cancel; bagimsiz yeni is new_task. Mevcut gorev yoksa new_task yaz.
 - revisions: yalnizca relation=revise ise doldur. Anahtarlar: format, destination,
-  filename, topic. History'deki eski dosyalari hedef gibi kullanma.
+  filename, topic, content. Kullanicinin yeni cumlesini content olarak yazma.
+  History'deki eski dosyalari hedef gibi kullanma.
+- Kullanici bir eylemi yasakliyorsa (ornek: acma) o yetenegi plana koyma;
+  constraints icine do_not:<yetenek> yaz, mode=conversation yap ve reply ile
+  onayla.
+- Tarayicida geri gitmek browser.back yetenegidir. Yeni URL acma.
+- Ekrandaki bir nesne (video, buton) bagimsiz new_task'tir; belge format
+  revizyonuna cevirme.
 - confidence: kullanicinin ne istedigini ne kadar iyi anladigini yaz.
   Istek acikca anlasiliyorsa eksik bir ayrinti olsa bile yuksek ver;
   yalnizca ne istendigi gercekten belirsizse dusuk ver.
@@ -190,9 +197,11 @@ def build_context_block(context: Any = None, history: list[str] | None = None) -
             "son uygulama": getattr(context, "last_application", None),
             "son tarayici adresi": getattr(context, "last_browser_url", None),
             "son adres": getattr(context, "last_url", None),
-            "suregelen gorev": getattr(context, "current_objective", None)
-            or getattr(context, "current_task", None),
+            "mevcut gorev amaci": getattr(context, "current_objective", None),
             "gorev parametreleri": _format_task_parameters(context),
+            "onceki gorev anlik goruntusu": (
+                (getattr(context, "previous_task_snapshot", None) or {}).get("objective")
+            ),
             "onceki gorev sonucu": getattr(context, "last_task_result", None)
             or getattr(context, "last_action_summary", None)
             or getattr(context, "last_mission_summary", None),
