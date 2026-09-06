@@ -57,9 +57,9 @@ class ChatWindow:
         self._camera_on = False
         self._hud = SciFiHudRenderer()
         self._root = ctk.CTk()
-        self._root.title("HERMES // NEURAL INTERFACE v0.1.3")
-        self._root.geometry(f"{max(width, 1360)}x{max(height, 820)}")
-        self._root.minsize(1100, 700)
+        self._root.title("HERMES")
+        self._root.geometry(f"{max(width, 1280)}x{max(height, 780)}")
+        self._root.minsize(1024, 640)
         self._root.configure(fg_color=BG)
         apply_appearance()
         self._approval_dialog: ApprovalDialog | None = None
@@ -83,14 +83,14 @@ class ChatWindow:
         title_row.pack(side="left", padx=(16, 8), pady=10)
         ctk.CTkLabel(
             title_row,
-            text="◢ HERMES ◣",
-            font=ctk.CTkFont(family="Consolas", size=20, weight="bold"),
+            text="HERMES",
+            font=ctk.CTkFont(family="Segoe UI Semibold", size=22, weight="bold"),
             text_color=CYAN,
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_row,
-            text="NEURAL LINK // v0.1.3",
-            font=ctk.CTkFont(family="Consolas", size=10),
+            text="Sesli asistan",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
             text_color=DIM,
         ).pack(anchor="w")
 
@@ -262,14 +262,23 @@ class ChatWindow:
 
         head = ctk.CTkFrame(right, fg_color="transparent")
         head.pack(fill="x", padx=12, pady=(12, 6))
-        section_label(ctk, head, "COMMS LOG").pack(side="left")
-        ghost_button(ctk, head, "CLR", self._clear_chat, width=56).pack(side="right", padx=(6, 0))
-        ghost_button(ctk, head, "CPY", self._copy_selection_or_all, width=56).pack(side="right")
+        section_label(ctk, head, "Sohbet").pack(side="left")
+        ghost_button(ctk, head, "Temizle", self._clear_chat, width=72).pack(side="right", padx=(6, 0))
+        ghost_button(ctk, head, "Kopyala", self._copy_selection_or_all, width=72).pack(side="right")
 
         self._transcript = selectable_log(ctk, right)
-        self._transcript.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        self._transcript.pack(fill="both", expand=True, padx=10, pady=(0, 4))
         bind_copy_shortcuts(self._transcript, self._root)
         self._transcript.bind("<Button-3>", self._show_copy_menu)
+
+        self._debug_label = ctk.CTkLabel(
+            right,
+            text="trace —",
+            text_color=DIM,
+            font=ctk.CTkFont(family="Consolas", size=10),
+            anchor="w",
+        )
+        self._debug_label.pack(fill="x", padx=12, pady=(0, 8))
 
         self._approval_bar = ctk.CTkFrame(
             right,
@@ -459,9 +468,12 @@ class ChatWindow:
         self._on_send(text)
 
     def append_message(self, role: str, text: str, *, via: str = "") -> None:
-        who = {"user": "You", "system": "System", "status": "Status"}.get(role, "HERMES")
+        if role == "status":
+            # Technical status never enters the conversation pane.
+            return
+        who = {"user": "Sen", "system": "Sistem"}.get(role, "Hermes")
         if role == "user" and via == "voice":
-            who = "You (mikrofon)"
+            who = "Sen (mikrofon)"
         self._transcript.insert("end", f"{who}\n{text}\n\n")
         self._transcript.see("end")
 
@@ -469,16 +481,23 @@ class ChatWindow:
         self._conn_dot.configure(text_color=self._state.connection_color())
         online = self._state.connection.value == "connected"
         self._conn_label.configure(
-            text="LINKED" if online else self._state.connection_label(),
+            text="Bağlı" if online else self._state.connection_label(),
             text_color=HOLO_GREEN if online else self._state.connection_color(),
         )
         self._status_label.configure(text=self._state.status_text)
         label = self._state.activity_label()
         color = self._state.activity_color()
-        self._listen_label.configure(text=f"◈ {label.upper()}", text_color=color)
+        self._listen_label.configure(text=f"◈ {label}", text_color=color)
         _, _, energy = self._activity_palette()
         self._activity_bar.configure(progress_color=color)
         self._activity_bar.set(max(0.12, min(1.0, 0.25 + energy + 0.15 * math.sin(self._tick))))
+        trace = getattr(self._state, "last_turn_trace", None) or {}
+        if isinstance(trace, dict) and trace.get("trace_id") and hasattr(self, "_debug_label"):
+            total = trace.get("total_ms", "?")
+            path = trace.get("path") or "-"
+            self._debug_label.configure(
+                text=f"trace {trace.get('trace_id')} · {path} · {total} ms"
+            )
         self._root.configure(fg_color=BG)
 
     def show(self) -> None:

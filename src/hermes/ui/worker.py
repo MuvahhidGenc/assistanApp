@@ -295,22 +295,31 @@ class BackgroundWorker:
 
     def _wire_voice_callbacks(self) -> None:
         async def on_status(message: str) -> None:
+            from hermes.agent.status_messages import is_conversation_status
+
             activity = ActivityMode.THINKING
             lower = message.casefold()
             if "dinliyorum" in lower or "dinle" in lower or "duydum" in lower:
                 activity = ActivityMode.LISTENING
-            elif "calistir" in lower or "adim" in lower:
+            elif "calistir" in lower or "adim" in lower or "açıyorum" in lower or "aciyorum" in lower:
                 activity = ActivityMode.EXECUTING
             self.state.set_activity(activity, status=message)
-            self.state.append_message("status", message)
+            # Operational status stays on the HUD — not in conversation history.
+            if not is_conversation_status(message) and activity is ActivityMode.LISTENING:
+                # Only user-facing listen cues may appear, as system chips — skip chat dump.
+                pass
             self._emit("status", {"message": message})
             self._emit("state")
 
         async def on_response(response: str, source: str) -> None:
             self.state.append_message("assistant", response)
-            self.state.set_activity(ActivityMode.IDLE, status="Hazir")
+            self.state.set_activity(ActivityMode.IDLE, status="Hazır")
             self._emit("message", {"role": "assistant", "text": response, "source": source})
             self._emit("task_completed", {"text": response})
+            # Expose last turn latency for debug panel.
+            meta = getattr(self._app.agent.state, "metadata", {}) or {}
+            if isinstance(meta.get("turn_trace"), dict):
+                self.state.last_turn_trace = dict(meta["turn_trace"])
             self._emit("state")
             notify_task_completed(response, enabled=self._notifications_enabled)
 
@@ -396,7 +405,6 @@ class BackgroundWorker:
             text = (message or "").strip()
             if text:
                 self.state.set_activity(activity, status=text)
-                self.state.append_message("status", text)
                 self._emit("status", {"message": text})
             mission_id = str((extra or {}).get("mission_id") or "").strip() or None
             if mission_id:

@@ -18,7 +18,7 @@ from hermes.voice.wake_word import DEFAULT_WAKE_WORDS, detect_wake_word, is_stop
 
 logger = get_logger(__name__)
 
-_START_SPEECH_DELAY_SECONDS = 0.85
+_START_SPEECH_DELAY_SECONDS = 0.35
 
 OnUserMessage = Callable[[str], Awaitable[None] | None]
 
@@ -278,14 +278,18 @@ class VoiceAssistant:
 
             async def _delayed_start() -> None:
                 nonlocal start_spoken
+                delay = float(
+                    getattr(self.settings, "start_speech_delay_seconds", _START_SPEECH_DELAY_SECONDS)
+                    or _START_SPEECH_DELAY_SECONDS
+                )
                 try:
-                    await asyncio.sleep(_START_SPEECH_DELAY_SECONDS)
+                    await asyncio.sleep(delay)
                 except asyncio.CancelledError:
                     return
                 if self._cancelled or start_spoken or not start_line:
                     return
                 elapsed_ms = (time.monotonic() - started_at) * 1000.0
-                if elapsed_ms < _START_SPEECH_DELAY_SECONDS * 1000.0:
+                if elapsed_ms < delay * 1000.0:
                     return
                 start_spoken = True
                 tts_pipeline._audit("SYNTHESIZER_CALLED", phase="started_speak", line=start_line)
@@ -466,6 +470,17 @@ class VoiceAssistant:
 
     async def _process_voice_command(self, command: str) -> None:
         if not command:
+            return
+        if getattr(self.settings, "speech_quality_gate", True):
+            from hermes.voice.speech_quality import assess_speech_quality
+
+            decision = assess_speech_quality(command)
+            if not decision.accept:
+                logger.info("speech_quality_reject", reason=decision.reason, text=command[:80])
+                return
+        if is_stop_command(command):
+            await self.stop_active()
+            await self._notify_status("Durduruldu.")
             return
         if self.on_command:
             result = self.on_command(command)

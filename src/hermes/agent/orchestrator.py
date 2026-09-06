@@ -550,6 +550,83 @@ class AgentOrchestrator:
         required = (tool.get_parameters_schema() or {}).get("required") or []
         return all(arguments.get(name) not in (None, "") for name in required)
 
+    def _needs_filesystem_reconcile(self, message: str) -> bool:
+        """Skip disk reconcile for pure open-web/app/volume turns."""
+        from hermes.agent.local_intent import match_local_intent
+        from hermes.agent.task_planner import is_multi_step_message
+        from hermes.intent.turn_relation import has_negative_polarity
+
+        if has_negative_polarity(message) or is_multi_step_message(message):
+            return True
+        intent = match_local_intent(message)
+        if intent is None:
+            return True
+        return intent.request.name not in {
+            "open_url",
+            "open_app",
+            "set_volume",
+            "show_desktop",
+            "browser_nav",
+            "press_keys",
+            "get_system_info",
+            "get_disk_info",
+            "get_network_config",
+            "get_clipboard",
+        }
+
+    async def _try_early_simple_local(self, message: str, conv_ctx: Any) -> str | None:
+        """Bound single-tool commands before reconcile / mission / LLM."""
+        from hermes.agent.local_intent import (
+            guess_local_action,
+            match_local_intent,
+            summarize_local_result,
+        )
+        from hermes.agent.status_messages import format_completed_status
+        from hermes.agent.task_planner import is_multi_step_message
+        from hermes.client.session_store import append_conversation_turn
+        from hermes.intent.turn_relation import has_negative_polarity
+        from hermes.observability import current_trace, turn_stage
+
+        if has_negative_polarity(message) or is_multi_step_message(message):
+            return None
+        intent = match_local_intent(message) or guess_local_action(message, conv_ctx=conv_ctx)
+        if intent is None or not self._local_intent_is_complete(intent):
+            return None
+        if intent.request.name not in {
+            "open_url",
+            "open_app",
+            "set_volume",
+            "show_desktop",
+            "browser_nav",
+            "press_keys",
+            "get_system_info",
+            "get_disk_info",
+            "get_network_config",
+            "get_clipboard",
+            "screenshot",
+        }:
+            return None
+        with turn_stage("execution"):
+            result = await self._execute_local_tool(
+                intent.request,
+                run_id=f"local-{uuid4().hex[:12]}",
+                user_message=message,
+            )
+        self._remember_tool_result(intent.request.name, result, message)
+        self._update_conversational_context(conv_ctx, intent.request.name, result)
+        conv_ctx.save()
+        text = summarize_local_result(intent, result)
+        if self.state.session_notice:
+            text = f"{self.state.session_notice}\n\n{text}"
+        append_conversation_turn("user", message)
+        append_conversation_turn("assistant", text)
+        await self._set_status(AgentPhase.COMPLETED, format_completed_status())
+        self.state.metadata["turn_outcome"] = "fast_local"
+        if current_trace():
+            current_trace().path = "fast_local"
+            current_trace().incr("tool_calls")
+        return text
+
     async def _try_complete_local_fast_path(
         self, message: str, conv_ctx: Any, resolved_refs: dict[str, str]
     ) -> str | None:
@@ -1030,6 +1107,25 @@ class AgentOrchestrator:
         from hermes.client.session_store import append_conversation_turn
         from hermes.context.conversational_context import ConversationalContext
         from hermes.context.reference_resolver import ReferenceResolver, ResolutionResult
+        from hermes.observability import current_trace, reset_turn_trace, start_turn_trace
+        from hermes.utils.logging import get_logger
+
+        trace, trace_token = start_turn_trace()
+        log = get_logger(__name__)
+        try:
+            return await self._process_message_inner(message, session_id=session_id)
+        finally:
+            active = current_trace() or trace
+            payload = active.to_dict()
+            self.state.metadata["turn_trace"] = payload
+            log.info("turn_trace", **payload)
+            reset_turn_trace(trace_token)
+
+    async def _process_message_inner(self, message: str, session_id: str | None = None) -> str:
+        from hermes.client.session_store import append_conversation_turn
+        from hermes.context.conversational_context import ConversationalContext
+        from hermes.context.reference_resolver import ReferenceResolver, ResolutionResult
+        from hermes.observability import current_trace, turn_stage
 
         self.state.step_count = 0
         self.state.metadata["local_tool_executed_this_turn"] = False
@@ -1039,7 +1135,6 @@ class AgentOrchestrator:
         self.state.metadata.pop("turn_outcome", None)
 
         conv_ctx = ConversationalContext.load()
-        conv_ctx.reconcile_with_filesystem()
         conv_ctx.record_user_message(message)
 
         from hermes.agent.conversation_flow import handle_meta_conversation
@@ -1056,14 +1151,26 @@ class AgentOrchestrator:
             append_conversation_turn("assistant", text)
             conv_ctx.save()
             await self._set_status(AgentPhase.COMPLETED, "Tamam.")
+            if current_trace():
+                current_trace().path = "conversation"
             return text
+
+        # Simple bound local commands skip FS reconcile + mission/LLM fan-out.
+        early = await self._try_early_simple_local(message, conv_ctx)
+        if early is not None:
+            return early
+
+        with turn_stage("reconcile"):
+            if self._needs_filesystem_reconcile(message):
+                conv_ctx.reconcile_with_filesystem()
 
         from hermes.agent.goal_parser import parse_goal
         from hermes.context.context_correction import resolve_user_correction
         from hermes.intent.turn_relation import TurnKind, classify_turn_relation
         from hermes.mission.models import MissionStatus
 
-        parsed = parse_goal(message, conv_ctx)
+        with turn_stage("understanding"):
+            parsed = parse_goal(message, conv_ctx)
         waiting = self._mission_store.load_active()
         if waiting is not None and waiting.status != MissionStatus.WAITING_FOR_USER:
             waiting = None

@@ -162,12 +162,20 @@ def match_local_intent(message: str) -> LocalIntent | None:
         url = extract_url_hint(text) or _extract_youtube_url(text)
         if url and not _looks_like_local_filename(url):
             href = url if "://" in url else f"https://{url}"
-            autoplay = "youtube" in href.lower() or "youtu.be" in href.lower()
             args = {"url": href}
-            if autoplay:
+            if _wants_youtube_playback(href, text):
                 args["autoplay"] = True
             return LocalIntent(LocalToolRequest("open_url", args), f"{href} acilacak.")
     return None
+
+
+def _wants_youtube_playback(href: str, message: str = "") -> bool:
+    """Playback assist only for watch/search/play — not bare homepage opens."""
+    target = (href or "").casefold()
+    if "youtube.com/watch" in target or "youtu.be/" in target or "search_query=" in target:
+        return True
+    lower = (message or "").casefold()
+    return bool(re.search(r"\b(izle|oynat|play)\b", lower))
 
 
 def guess_install_action(message: str) -> LocalIntent | None:
@@ -302,9 +310,8 @@ def guess_local_action(
     url = extract_url_hint(message) or _extract_youtube_url(message)
     if url and not _looks_like_local_filename(url):
         href = url if "://" in url else f"https://{url}"
-        autoplay = "youtube" in href.lower() or "youtu.be" in href.lower()
         args: dict = {"url": href}
-        if autoplay:
+        if _wants_youtube_playback(href, message):
             args["autoplay"] = True
         return LocalIntent(LocalToolRequest("open_url", args), f"{href} acilacak.")
     folder = _match_create_folder(message, lower)
@@ -511,7 +518,7 @@ def _match_video_intent(text: str, lower: str) -> LocalIntent | None:
                 summary=f"YouTube aramasi acilacak: {query}",
             )
     return LocalIntent(
-        LocalToolRequest("open_url", {"url": "https://www.youtube.com", "autoplay": True}),
+        LocalToolRequest("open_url", {"url": "https://www.youtube.com"}),
         summary="YouTube acilacak.",
     )
 
@@ -986,7 +993,22 @@ def summarize_local_result(intent: LocalIntent, result: object) -> str:
 
         return format_open_app_message(intent, result)
     if name == "open_url":
-        return intent.summary.replace("acilacak", "acildi")
+        href = str((intent.request.arguments or {}).get("url") or "")
+        lower = href.casefold()
+        if "youtube.com" in lower and "watch" not in lower and "search_query" not in lower:
+            return "Tamam, YouTube'u açtım."
+        if "google.com" in lower:
+            return "Tamam, Google'ı açtım."
+        host = ""
+        try:
+            from urllib.parse import urlparse
+
+            host = (urlparse(href).netloc or "").replace("www.", "")
+        except Exception:
+            host = ""
+        if host:
+            return f"Tamam, {host} açıldı."
+        return "Tamam, sayfayı açtım."
     if name == "create_folder" and isinstance(output, dict):
         from hermes.agent.user_messages import format_create_folder_message
 

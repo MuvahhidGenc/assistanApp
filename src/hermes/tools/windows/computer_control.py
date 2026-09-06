@@ -100,9 +100,13 @@ class OpenUrlTool(BaseTool):
         if not url:
             return ToolExecutionResult(success=False, error="url required")
         target = url.strip().lower()
-        use_youtube = autoplay or "youtube" in target or "youtu.be" in target
+        use_youtube_playback = bool(autoplay) and (
+            "youtube.com/watch" in target
+            or "youtu.be/" in target
+            or "results?search_query=" in target
+        )
         try:
-            if use_youtube:
+            if use_youtube_playback:
                 data = await run_in_thread(open_youtube_with_playback, url)
             else:
                 data = await run_in_thread(open_url, url, browser=browser)
@@ -121,8 +125,8 @@ class OpenUrlTool(BaseTool):
                 },
                 "autoplay": {
                     "type": "boolean",
-                    "description": "YouTube icin videoyu oynatmayi dene",
-                    "default": True,
+                    "description": "YouTube video/arama icin oynatma yardimi (varsayilan kapali)",
+                    "default": False,
                 },
             },
             "required": ["url"],

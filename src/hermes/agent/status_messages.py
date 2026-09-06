@@ -87,8 +87,33 @@ def format_planning_status() -> str:
 
 
 def format_understanding_status() -> str:
-    return "Anladim, isleme basliyorum..."
+    return "Tamam, bakıyorum..."
 
 
 def format_completed_status() -> str:
     return "Tamam."
+
+
+def is_conversation_status(text: str) -> bool:
+    """Technical status lines that must not appear as chat messages."""
+    lower = (text or "").casefold().strip()
+    if not lower:
+        return False
+    markers = (
+        "islemi yapiyorum",
+        "işlemi yapıyorum",
+        "gorevi planliyorum",
+        "görevi planlıyorum",
+        "anladim, isleme",
+        "anladım, işleme",
+        "kontrol ediyorum",
+        "ekrani okuyorum",
+        "ekranı okuyorum",
+        "ne istedigini anlamaya",
+        "ne istediğini anlamaya",
+        "planliyorum",
+        "planlıyorum",
+        "siradaki adimi",
+        "sıradaki adımı",
+    )
+    return any(marker in lower for marker in markers)

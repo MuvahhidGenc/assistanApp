@@ -64,20 +64,24 @@ class VoiceSettings(BaseModel):
     enabled: bool = True
     wake_word_enabled: bool = True
     wake_words: list[str] = Field(default_factory=lambda: ["abi", "akhi", "dostum"])
-    wake_listen_timeout_seconds: float = 6.0
-    wake_phrase_limit_seconds: float = 8.0
-    command_listen_timeout_seconds: float = 12.0
-    command_phrase_limit_seconds: float = 18.0
-    command_pause_seconds: float = 2.0
+    wake_listen_timeout_seconds: float = 5.0
+    wake_phrase_limit_seconds: float = 6.0
+    command_listen_timeout_seconds: float = 10.0
+    command_phrase_limit_seconds: float = 14.0
+    command_pause_seconds: float = 0.9
     continuous_listen: bool = True
     show_listening_prompt: bool = True
     stt_language: str = "tr-TR"
+    prefer_local_stt: bool = False
+    speech_quality_gate: bool = True
     tts_backend: str = "elevenlabs"
     tts_language: str = "tr-TR"
     tts_gender: str = "male"
     tts_voice: str = "tr-TR-AhmetNeural"
     elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
     elevenlabs_model: str = "eleven_multilingual_v2"
+    barge_in_enabled: bool = True
+    start_speech_delay_seconds: float = 0.35
 
 
 class SecuritySettings(BaseModel):
