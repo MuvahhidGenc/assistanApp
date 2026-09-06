@@ -200,9 +200,16 @@ class VoiceAssistant:
         if cleaned == self._last_spoken_text and (now - self._last_spoken_at) < 4.0:
             tts_pipeline._audit("TTS_SKIPPED", reason="dedup", phase=phase, chars=len(cleaned))
             return True
+        barge_task: asyncio.Task[None] | None = None
         try:
             await self._set_activity("speaking")
             tts_pipeline._audit("TTS_SPEAK_BEGIN", phase=phase, chars=len(cleaned))
+            if (
+                getattr(self.settings, "barge_in_enabled", True)
+                and self.stt is not None
+                and self.stt.is_available()
+            ):
+                barge_task = asyncio.create_task(self._barge_in_watch())
             await self.tts.speak(cleaned)
             self._last_spoken_text = cleaned
             self._last_spoken_at = time.monotonic()
@@ -220,7 +227,34 @@ class VoiceAssistant:
             )
             return False
         finally:
+            if barge_task is not None:
+                barge_task.cancel()
+                try:
+                    await barge_task
+                except asyncio.CancelledError:
+                    pass
             await self._set_activity(resume_activity)
+
+    async def _barge_in_watch(self) -> None:
+        """Listen for stop while TTS plays; requires real tts.stop()."""
+        assert self.stt is not None
+        try:
+            while not self._cancelled:
+                heard = await self.stt.listen(
+                    timeout=0.6,
+                    phrase_limit=2.5,
+                    pause_seconds=0.9,
+                )
+                if not heard:
+                    continue
+                if is_stop_command(heard):
+                    logger.info("barge_in_stop", text=heard[:80])
+                    await self.stop_active()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("barge_in_watch_error", error=str(exc))
 
     async def handle_text_input(self, text: str) -> None:
         """Process typed user input — always available."""
