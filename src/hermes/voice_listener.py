@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -89,9 +90,9 @@ class VoiceListener:
             recognizer.energy_threshold = 320
             microphone = sr.Microphone()
         if pause_seconds is not None:
-            recognizer.pause_threshold = max(0.45, float(pause_seconds))
+            recognizer.pause_threshold = max(0.9, float(pause_seconds))
         else:
-            recognizer.pause_threshold = max(0.45, float(recognizer.pause_threshold or 0.55))
+            recognizer.pause_threshold = max(0.9, float(recognizer.pause_threshold or 1.2))
         with microphone as source:
             # Prefer shared ambient calibration; avoid 350ms every utterance.
             if not getattr(self._google, "_ambient_calibrated", False):
@@ -108,13 +109,29 @@ class VoiceListener:
         tmp = Path(name)
         try:
             tmp.write_bytes(audio.get_wav_data())
-            segments, _info = model.transcribe(
-                str(tmp),
-                language="tr",
-                beam_size=1,
-                vad_filter=True,
-                condition_on_previous_text=False,
-            )
+            # Frozen EXE often lacks Silero ONNX under faster_whisper/assets.
+            use_vad = not getattr(sys, "frozen", False)
+            try:
+                segments, _info = model.transcribe(
+                    str(tmp),
+                    language="tr",
+                    beam_size=1,
+                    vad_filter=use_vad,
+                    condition_on_previous_text=False,
+                )
+            except Exception as vad_exc:
+                err = str(vad_exc).casefold()
+                if "silero" in err or "vad" in err or "onnx" in err:
+                    logger.warning("whisper_vad_disabled", error=str(vad_exc))
+                    segments, _info = model.transcribe(
+                        str(tmp),
+                        language="tr",
+                        beam_size=1,
+                        vad_filter=False,
+                        condition_on_previous_text=False,
+                    )
+                else:
+                    raise
             text = " ".join(segment.text for segment in segments).strip()
             return text or None
         finally:

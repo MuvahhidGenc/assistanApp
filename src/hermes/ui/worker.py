@@ -312,9 +312,12 @@ class BackgroundWorker:
             self._emit("state")
 
         async def on_response(response: str, source: str) -> None:
-            self.state.append_message("assistant", response)
+            from hermes.voice.spoken import sanitize_chat_reply
+
+            cleaned = sanitize_chat_reply(response)
+            self.state.append_message("assistant", cleaned)
             self.state.set_activity(ActivityMode.IDLE, status="Hazır")
-            self._emit("message", {"role": "assistant", "text": response, "source": source})
+            self._emit("message", {"role": "assistant", "text": cleaned, "source": source})
             self._emit("task_completed", {"text": response})
             # Expose last turn latency for debug panel.
             meta = getattr(self._app.agent.state, "metadata", {}) or {}

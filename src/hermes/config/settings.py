@@ -68,7 +68,8 @@ class VoiceSettings(BaseModel):
     wake_phrase_limit_seconds: float = 6.0
     command_listen_timeout_seconds: float = 10.0
     command_phrase_limit_seconds: float = 14.0
-    command_pause_seconds: float = 0.9
+    # Endpoint silence before STT final. Too low (<1s) splits Turkish phrases.
+    command_pause_seconds: float = 1.4
     continuous_listen: bool = True
     show_listening_prompt: bool = True
     stt_language: str = "tr-TR"

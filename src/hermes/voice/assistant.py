@@ -51,8 +51,12 @@ class VoiceAssistant:
     _last_spoken_text: str = field(default="", init=False)
     _last_spoken_at: float = field(default=0.0, init=False)
     _tts_error_notified: bool = field(default=False, init=False)
+    _utterance_assembler: Any = field(default=None, init=False)
 
     def __post_init__(self) -> None:
+        from hermes.voice.utterance import UtteranceAssembler
+
+        self._utterance_assembler = UtteranceAssembler(hold_seconds=2.0)
         if self.stt is None:
             self.stt = create_stt(language=self.settings.stt_language)
         if self.tts is None:
@@ -425,21 +429,37 @@ class VoiceAssistant:
             await self._enter_voice_session(wake, remainder)
 
     async def _enter_voice_session(self, wake_word: str, initial_command: str = "") -> None:
+        from hermes.voice.utterance import looks_incomplete_utterance
+
         self._voice_session_active = True
+        if self._utterance_assembler is not None:
+            self._utterance_assembler.clear()
         await self._set_activity("listening")
         await self._notify_status(f"Sesli mod — dinliyorum ({wake_word})")
-        await self._speak_prompt("Dinliyorum abi.")
 
         first = initial_command.strip()
-        if first:
-            await self._process_voice_command(first)
+        # Do not speak over the user when wake already carried a command fragment.
+        if not first:
+            await self._speak_prompt("Dinliyorum abi.")
+        elif looks_incomplete_utterance(first):
+            # Hold mid-phrase ("YouTube'u") — never dispatch as its own turn.
+            if self._utterance_assembler is not None:
+                self._utterance_assembler.push(first)
+            logger.info("utterance_hold_wake_remainder", text=first[:120])
+        else:
+            await self._dispatch_final_utterance(first)
 
         if not getattr(self.settings, "continuous_listen", True):
+            if self._utterance_assembler is not None and self._utterance_assembler.should_keep_listening():
+                # Incomplete remainder without continuous listen — drop, don't agent.
+                dropped = self._utterance_assembler.flush(force=True)
+                logger.info("utterance_dropped_incomplete", text=(dropped or "")[:120])
             self._voice_session_active = False
             await self._set_activity("idle")
             return
 
-        pause = float(getattr(self.settings, "command_pause_seconds", 2.0) or 2.0)
+        pause = float(getattr(self.settings, "command_pause_seconds", 1.4) or 1.4)
+        empty_listens = 0
         try:
             while self._running and self._voice_enabled and self._voice_session_active:
                 await self._set_activity("listening")
@@ -455,18 +475,53 @@ class VoiceAssistant:
                 if not self._running or not self._voice_enabled or not self._voice_session_active:
                     break
                 if not heard:
+                    empty_listens += 1
+                    holding = (
+                        self._utterance_assembler is not None
+                        and self._utterance_assembler.should_keep_listening()
+                    )
+                    if holding and empty_listens < 2:
+                        await asyncio.sleep(0.1)
+                        continue
+                    if holding and self._utterance_assembler is not None:
+                        # Still incomplete after silence — drop, do not create a turn.
+                        dropped = self._utterance_assembler.flush(force=True)
+                        logger.info(
+                            "utterance_dropped_incomplete",
+                            text=(dropped or "")[:120],
+                        )
+                    empty_listens = 0
                     await asyncio.sleep(0.15)
                     continue
+                empty_listens = 0
                 if is_stop_command(heard):
+                    if self._utterance_assembler is not None:
+                        self._utterance_assembler.clear()
                     await self._notify_status("Sesli mod kapandı.")
                     await self._speak_prompt("Tamam abi.", resume_activity="idle")
                     break
-                await self._process_voice_command(heard.strip())
+                ready = heard.strip()
+                if self._utterance_assembler is not None:
+                    ready = self._utterance_assembler.push(heard.strip())
+                    if ready is None:
+                        logger.info(
+                            "utterance_hold_partial_final",
+                            text=heard.strip()[:120],
+                            pending=self._utterance_assembler.pending[:120],
+                        )
+                        continue
+                await self._dispatch_final_utterance(ready)
         except asyncio.CancelledError:
             raise
         finally:
             self._voice_session_active = False
+            if self._utterance_assembler is not None:
+                self._utterance_assembler.clear()
             await self._set_activity("idle")
+
+    async def _dispatch_final_utterance(self, command: str) -> None:
+        """Only FINAL assembled utterances reach the agent."""
+        await self._process_voice_command(command)
 
     async def _process_voice_command(self, command: str) -> None:
         if not command:

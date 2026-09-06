@@ -471,10 +471,15 @@ class ChatWindow:
         if role == "status":
             # Technical status never enters the conversation pane.
             return
+        from hermes.voice.spoken import is_internal_chat_text, sanitize_chat_reply
+
+        body = text or ""
+        if role == "assistant" and is_internal_chat_text(body):
+            body = sanitize_chat_reply(body)
         who = {"user": "Sen", "system": "Sistem"}.get(role, "Hermes")
         if role == "user" and via == "voice":
             who = "Sen (mikrofon)"
-        self._transcript.insert("end", f"{who}\n{text}\n\n")
+        self._transcript.insert("end", f"{who}\n{body}\n\n")
         self._transcript.see("end")
 
     def refresh_state(self) -> None:

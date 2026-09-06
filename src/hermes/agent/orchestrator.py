@@ -223,9 +223,7 @@ class AgentOrchestrator:
             conv_ctx.active_step_id = loaded.current_step_id if loaded else None
             conv_ctx.record_mission_summary(engine_result.summary)
             conv_ctx.save()
-            text = engine_result.summary
-            if preamble and preamble not in text:
-                text = f"{preamble}\n\n{text}"
+            text = self._user_facing_mission_text(engine_result, loaded, preamble=preamble)
             if self.state.session_notice:
                 text = f"{self.state.session_notice}\n\n{text}"
             append_conversation_turn("user", message)
@@ -271,9 +269,7 @@ class AgentOrchestrator:
                     if natural:
                         conv_ctx.record_verified_action(natural)
             conv_ctx.save()
-            text = engine_result.summary
-            if preamble and preamble not in text:
-                text = f"{preamble}\n\n{text}"
+            text = self._user_facing_mission_text(engine_result, loaded, preamble=preamble)
             if self.state.session_notice:
                 text = f"{self.state.session_notice}\n\n{text}"
             append_conversation_turn("user", message)
@@ -291,11 +287,43 @@ class AgentOrchestrator:
                 self._complete_mission(mission_id, text, success=engine_result.success)
             return text
 
-        text = engine_result.summary or preamble or "Gorev devam ediyor."
+        text = self._user_facing_mission_text(engine_result, loaded, preamble=preamble)
         append_conversation_turn("user", message)
         append_conversation_turn("assistant", text)
         conv_ctx.save()
         return text
+
+    def _user_facing_mission_text(
+        self,
+        engine_result: Any,
+        loaded: Any,
+        *,
+        preamble: str = "",
+    ) -> str:
+        """Chat/TTS reply — never raw mission telemetry."""
+        from hermes.agent.mission_progress import build_natural_mission_summary
+        from hermes.voice.spoken import is_internal_chat_text, sanitize_chat_reply
+
+        natural = ""
+        if loaded is not None:
+            natural = build_natural_mission_summary(loaded)
+        candidates = [
+            natural,
+            *list(getattr(engine_result, "user_messages", None) or []),
+            getattr(engine_result, "summary", "") or "",
+            preamble,
+        ]
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if not text or is_internal_chat_text(text):
+                continue
+            if preamble and preamble not in text and preamble.strip():
+                return f"{preamble}\n\n{text}"
+            return text
+        return sanitize_chat_reply(
+            getattr(engine_result, "summary", "") or preamble,
+            fallback="Tamam, yaptım.",
+        )
 
     def _suspend_active_mission_if_needed(
         self,

@@ -66,10 +66,11 @@ class SpeechRecognitionSTT:
 
             self._recognizer = sr.Recognizer()
             self._recognizer.dynamic_energy_threshold = True
-            self._recognizer.energy_threshold = 320
-            # Endpoint sooner so Hermes doesn't hang after the user stops talking.
-            self._recognizer.pause_threshold = 0.55
-            self._recognizer.non_speaking_duration = 0.35
+            self._recognizer.energy_threshold = 300
+            # ~1.2s end-of-speech: fast enough after stop, slow enough not to
+            # cut "Not defterini aç" into "not defter".
+            self._recognizer.pause_threshold = 1.2
+            self._recognizer.non_speaking_duration = 0.5
             self._microphone = sr.Microphone()
             with self._microphone as source:
                 self._recognizer.adjust_for_ambient_noise(source, duration=0.45)
@@ -100,7 +101,8 @@ class SpeechRecognitionSTT:
 
         old_pause = self._recognizer.pause_threshold
         if pause_seconds is not None:
-            self._recognizer.pause_threshold = max(0.45, float(pause_seconds))
+            # Floor at 0.9s — aggressive endpoints were creating fake user turns.
+            self._recognizer.pause_threshold = max(0.9, float(pause_seconds))
         try:
             with self._microphone as source:
                 # Recalibrate only rarely — every listen costs ~350ms and drifts thresholds.

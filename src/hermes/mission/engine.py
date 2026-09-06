@@ -550,12 +550,12 @@ class MissionEngine:
         self._store.save(mission)
         if auditor is not None:
             auditor.mission_completed(success=True, summary=summary_text)
-        completion_prefix = "Gorev tamamlandi." if natural_summary else "Mission tamamlandi:"
-        completion_body = summary_text if natural_summary else f"\n{summary_text}"
+        # User-facing chat uses natural_summary / user_messages — keep engine
+        # summary telemetry-free so leaks cannot reach the conversation pane.
         return EngineResult(
             handled=True,
             success=True,
-            summary=f"{completion_prefix}{completion_body}",
+            summary=summary_text if natural_summary else (user_messages[-1] if user_messages else "Tamam, yaptım."),
             mission_id=mission.mission_id,
             step_summaries=summaries,
             user_messages=user_messages,

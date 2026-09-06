@@ -24,6 +24,10 @@ if (root / "assets" / "tray.png").exists():
 
 datas += collect_data_files("customtkinter")
 datas += collect_data_files("edge_tts")
+try:
+    datas += collect_data_files("faster_whisper")
+except Exception:
+    pass
 datas += [(certifi.where(), "certifi")]
 
 hiddenimports = collect_submodules("customtkinter")
