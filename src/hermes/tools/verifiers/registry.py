@@ -10,6 +10,7 @@ from hermes.tools.verifiers.specific import (
     ClickScreenVerifier,
     CopyFileVerifier,
     CreateFolderVerifier,
+    FilesystemChangeVerifier,
     GetSystemInfoVerifier,
     GitCloneVerifier,
     InstallProgramVerifier,
@@ -86,10 +87,17 @@ def create_default_verifier_registry() -> VerifierRegistry:
         ClickScreenVerifier(),
         ScrollScreenVerifier(),
         SearchFilesVerifier(),
-        CopyFileVerifier(),
         ReadFileVerifier(),
         OpenPathVerifier(),
         OpenAppVerifier(),
+        # FilesystemChangeVerifier is generic and applies to
+        # move/copy/delete/rename. We register it *before* the more
+        # specific CopyFileVerifier so the latter wins for ``copy_file``
+        # while FilesystemChangeVerifier still handles move_file,
+        # rename_path, and delete_path. ``VerifierRegistry.register``
+        # is "last write wins" so the order is significant.
+        FilesystemChangeVerifier(),
+        CopyFileVerifier(),
     ):
         registry.register(verifier)
     return registry

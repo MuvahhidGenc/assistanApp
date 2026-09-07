@@ -108,6 +108,14 @@ class ApprovalRequest(BaseModel):
     plan_steps: list[str] = Field(default_factory=list)
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
+    # V3 extension fields — let the local approval manager carry the
+    # action-level metadata it needs to make a security-correct decision.
+    action_id: str = ""
+    capability: str = ""
+    tool: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    risk_level: str | None = None
+    reason: str = ""
 
 
 class HermesApprovalSubmit(BaseModel):

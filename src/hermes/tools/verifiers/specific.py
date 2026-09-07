@@ -1121,3 +1121,166 @@ class ScrollScreenVerifier(BaseVerifier):
             details={"state_id": data["payload"].get("state_id"), "verified_output": data["payload"]},
             observation=data["observation"],
         )
+
+
+class FilesystemChangeVerifier(BaseVerifier):
+    """Verify move/copy/delete/rename against the real filesystem.
+
+    A tool that claims ``success=True`` but did not actually mutate the
+    filesystem is caught here. The runtime then treats the action as
+    unverified, refuses to declare goal completion on top of it, and
+    asks the LLM to re-reason.
+    """
+
+    tool_names = ("move_file", "copy_file", "delete_path", "rename_path")
+
+    async def verify(self, ctx: VerifierContext) -> VerificationResult:
+        if not ctx.execution_success:
+            return VerificationResult(
+                status=VerificationStatus.FAILED,
+                method="filesystem_change",
+                details={"reason": "execution_failed", "error": ctx.execution_error},
+            )
+
+        args = ctx.tool_arguments or {}
+        tool = ctx.tool_name
+        # Prefer the tool's reported output path; fall back to the
+        # argument the runtime asked for.
+        reported = ""
+        if isinstance(ctx.execution_output, dict):
+            reported = str(
+                ctx.execution_output.get("path")
+                or ctx.execution_output.get("destination")
+                or ctx.execution_output.get("source")
+                or ""
+            ).strip()
+        source = str(args.get("path") or args.get("source") or "").strip()
+        dest = str(
+            args.get("new_name")
+            or args.get("destination")
+            or args.get("target")
+            or args.get("dest")
+            or ""
+        ).strip()
+        if tool == "delete_path":
+            target = source or reported
+            try:
+                target_path = resolve_user_path(target) if target else None
+            except ValueError:
+                target_path = None
+            exists = bool(target_path and target_path.exists())
+            observation = Observation(
+                source="filesystem",
+                data={"path": target, "exists": exists, "tool": tool},
+            )
+            if exists:
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    method="filesystem_change",
+                    details={"reason": "target_still_exists", "path": target},
+                    observation=observation,
+                )
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="filesystem_change",
+                details={"path": target, "deleted": True},
+                observation=observation,
+            )
+
+        # move_file / copy_file / rename_path — verify source/dest.
+        if tool in ("move_file", "rename_path"):
+            if not source or not dest:
+                return VerificationResult(
+                    status=VerificationStatus.UNKNOWN,
+                    method="filesystem_change",
+                    details={"reason": "source_or_dest_missing", "tool": tool},
+                )
+            try:
+                source_path = resolve_user_path(source)
+                # For rename, dest may be just a basename; resolve next to source.
+                dest_path = resolve_user_path(dest)
+            except ValueError:
+                return VerificationResult(
+                    status=VerificationStatus.UNKNOWN,
+                    method="filesystem_change",
+                    details={"reason": "path_unresolvable", "tool": tool},
+                )
+            observation = Observation(
+                source="filesystem",
+                data={
+                    "source": source,
+                    "dest": str(dest_path),
+                    "tool": tool,
+                    "source_exists": source_path.exists(),
+                    "dest_exists": dest_path.exists(),
+                },
+            )
+            if not dest_path.exists():
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    method="filesystem_change",
+                    details={"reason": "dest_missing", "dest": str(dest_path)},
+                    observation=observation,
+                )
+            if tool == "move_file" and source_path.exists() and source_path.samefile(dest_path) is False:
+                # move_file should leave the source gone. Same device,
+                # different inode == success. If the source still exists
+                # at the original path we treat it as failed.
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    method="filesystem_change",
+                    details={"reason": "source_still_exists_after_move", "source": source},
+                    observation=observation,
+                )
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="filesystem_change",
+                details={"source": source, "dest": str(dest_path), "tool": tool},
+                observation=observation,
+            )
+
+        if tool == "copy_file":
+            if not source or not dest:
+                return VerificationResult(
+                    status=VerificationStatus.UNKNOWN,
+                    method="filesystem_change",
+                    details={"reason": "source_or_dest_missing", "tool": tool},
+                )
+            try:
+                source_path = resolve_user_path(source)
+                dest_path = resolve_user_path(dest)
+            except ValueError:
+                return VerificationResult(
+                    status=VerificationStatus.UNKNOWN,
+                    method="filesystem_change",
+                    details={"reason": "path_unresolvable", "tool": tool},
+                )
+            observation = Observation(
+                source="filesystem",
+                data={
+                    "source": source,
+                    "dest": str(dest_path),
+                    "tool": tool,
+                    "source_exists": source_path.exists(),
+                    "dest_exists": dest_path.exists(),
+                },
+            )
+            if not dest_path.exists():
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    method="filesystem_change",
+                    details={"reason": "dest_missing", "dest": str(dest_path)},
+                    observation=observation,
+                )
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                method="filesystem_change",
+                details={"source": source, "dest": str(dest_path), "tool": tool},
+                observation=observation,
+            )
+
+        return VerificationResult(
+            status=VerificationStatus.UNKNOWN,
+            method="filesystem_change",
+            details={"reason": "no_rule", "tool": tool},
+        )

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from hermes.agent.orchestrator import AgentOrchestrator
+from hermes.runtime.orchestrator import V3Orchestrator
 from hermes.config.settings import VoiceSettings
 from hermes.utils.logging import get_logger
 from hermes.voice import tts as tts_pipeline
@@ -34,7 +34,7 @@ class VoiceAssistant:
     """
 
     settings: VoiceSettings
-    agent: AgentOrchestrator
+    agent: V3Orchestrator
     on_status: OnUserMessage | None = None
     on_response: Callable[[str, str], Awaitable[None] | None] | None = None
     on_user_input: Callable[[str, str], Awaitable[None] | None] | None = None
@@ -480,7 +480,7 @@ class VoiceAssistant:
 
 
 def build_voice_assistant(
-    agent: AgentOrchestrator,
+    agent: V3Orchestrator,
     settings: VoiceSettings,
     stt: SpeechToText | None = None,
     tts: TextToSpeech | None = None,
