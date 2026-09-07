@@ -371,19 +371,19 @@ class VoiceAssistant:
         if self.tts:
             self.tts.stop()
         if self._active_request and not self._active_request.done():
+            # V3 cancellation model: the runtime owns the entire
+            # turn (LLM reasoning + tool execution) inside a single
+            # ``process_turn`` call. Cancelling the local task stops
+            # the in-flight turn; no separate server-side ``stop_run``
+            # is needed because the V3 server transport runs inside
+            # the same task and ``asyncio.CancelledError`` propagates
+            # to the LLM call as well.
             self._active_request.cancel()
             try:
                 await self._active_request
             except asyncio.CancelledError:
                 pass
             self._active_request = None
-
-        run_id = self.agent.state.current_run_id
-        if run_id:
-            try:
-                await self.agent._server.stop_run(run_id)
-            except Exception:
-                return
 
     async def _wake_word_loop(self) -> None:
         """Listen for wake words only — not continuous command parsing."""

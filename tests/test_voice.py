@@ -343,3 +343,44 @@ async def test_configure_voice_toggle(mock_agent, voice_settings):
     assert assistant.voice_enabled is True
 
     await assistant.stop()
+
+
+# ---------------------------------------------------------------------------
+# V3 contract: VoiceAssistant must not access V2-only agent state or
+# server transport. The V3 runtime does not expose ``current_run_id``
+# or ``agent._server``; voice cancellation goes through the local
+# ``_active_request.cancel()`` path.
+# ---------------------------------------------------------------------------
+
+
+def test_voice_stop_active_does_not_touch_v2_agent_state():
+    """V2 ``agent.state.current_run_id`` does not exist in V3. Voice
+    must not try to read it; otherwise the runtime crashes on first
+    cancellation.
+    """
+    import inspect
+
+    from hermes.voice.assistant import VoiceAssistant
+
+    src = inspect.getsource(VoiceAssistant.stop_active)
+    assert "self.agent.state.current_run_id" not in src, (
+        "stop_active must not read V2's current_run_id field; "
+        "V3AgentState does not define it."
+    )
+    assert "self.agent._server.stop_run" not in src, (
+        "stop_active must not call V2's server.stop_run; "
+        "V3 owns the entire turn inside process_turn and "
+        "cancelling the local task is sufficient."
+    )
+
+
+def test_voice_stop_active_cancels_active_request():
+    """V3 cancellation model: ``_active_request.cancel()`` is the
+    only required step.
+    """
+    import inspect
+
+    from hermes.voice.assistant import VoiceAssistant
+
+    src = inspect.getsource(VoiceAssistant.stop_active)
+    assert "_active_request.cancel()" in src
