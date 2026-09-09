@@ -6,7 +6,17 @@ Does NOT modify backend; uses existing frozen dataclasses / enums.
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
+from enum import StrEnum
 from hermes.execution_log.events import EventEnvelope, EventKind
+
+class UIEventKind(StrEnum):
+    ACTION_STARTED = "action_started"
+    ACTION_FINISHED = "action_finished"
+    OBSERVATION_RECORDED = "observation_recorded"
+    VERIFICATION_RECORDED = "verification_recorded"
+    RECOVERY_STARTED = "recovery_started"
+    RECOVERY_FINISHED = "recovery_finished"
+    TASK_CANCELLED = "task_cancelled"
 
 @dataclass(frozen=True)
 class UIEvent:
