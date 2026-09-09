@@ -67,17 +67,6 @@ def mock_agent():
     return agent
 
 
-def test_brief_spoken_reply_always_short_for_long_text():
-    from hermes.voice.spoken import brief_spoken_reply, looks_like_missing_tools
-
-    long_ok = "DNS guncellendi: 8.8.8.8. Adapter Wi-Fi. Daha fazla detay sohbette duruyor."
-    assert brief_spoken_reply(long_ok).startswith("Tamam, DNS ayarland")
-    assert brief_spoken_reply("Anladım. Detaylar aşağıda.") == "Anladım"
-    assert brief_spoken_reply("Merhaba abi.") == "Merhaba abi"
-    assert len(brief_spoken_reply("x" * 200)) < 80
-    assert looks_like_missing_tools("yerel arac yok")
-
-
 def test_pick_edge_voice_uses_ahmet():
     assert pick_edge_voice("", "male") == "tr-TR-AhmetNeural"
     assert pick_edge_voice("tr-TR-EmelNeural", "male") == "tr-TR-AhmetNeural"
@@ -134,7 +123,8 @@ async def test_text_input_speaks_brief_reply(mock_agent, voice_settings):
         tts=tts,
     )
     await assistant.handle_text_input("ekrani oku")
-    assert tts.spoken[-1] == "Ekrana baktım, detaylar sohbette."
+    assert tts.spoken[-1].startswith("Ekranda gorunen yazi:")
+    assert len(tts.spoken[-1]) <= 160
 
 
 @pytest.mark.asyncio

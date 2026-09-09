@@ -11,21 +11,12 @@ are forbidden at the writer level.
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-_FORBIDDEN_PATTERNS = (
-    re.compile(r"password\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"api[_-]?key\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"secret\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"token\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"\bBEGIN [A-Z ]*PRIVATE KEY\b"),
-)
+from hermes.memory.security import atomic_write_json, read_json_file, scrub_text
 
 
 def _utc_now_iso() -> str:
@@ -38,10 +29,7 @@ def _scrub_secrets(text: str) -> str:
     Episodic memory must never carry secrets. The scrubber is deliberately
     conservative: if it *might* be a credential, redact it.
     """
-    scrubbed = text
-    for pattern in _FORBIDDEN_PATTERNS:
-        scrubbed = pattern.sub("[REDACTED]", scrubbed)
-    return scrubbed
+    return scrub_text(text)
 
 
 @dataclass(frozen=True)
@@ -94,10 +82,15 @@ class EpisodicMemory:
             capabilities=capabilities,
             tags=tags,
         )
+        previous = list(self._records)
         self._records.append(record)
         if len(self._records) > self._max_records:
             self._records = self._records[-self._max_records :]
-        self._persist()
+        try:
+            self._persist()
+        except Exception:
+            self._records = previous
+            raise
         return record
 
     @property
@@ -115,8 +108,13 @@ class EpisodicMemory:
         return tuple(record for record in self._records if matches(record))
 
     def clear(self) -> None:
+        previous = self._records
         self._records = []
-        self._persist()
+        try:
+            self._persist()
+        except Exception:
+            self._records = previous
+            raise
 
     def _persist(self) -> None:
         if self._path is None:
@@ -126,13 +124,12 @@ class EpisodicMemory:
             "schema_version": 1,
             "records": [record.to_dict() for record in self._records],
         }
-        self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self._path, payload)
 
     def _load(self) -> None:
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
+        data = read_json_file(self._path)
+        if int(data.get("schema_version", 0)) != 1:
+            raise ValueError("Unsupported episodic memory schema version")
         records: list[EpisodicRecord] = []
         for entry in data.get("records", []):
             records.append(

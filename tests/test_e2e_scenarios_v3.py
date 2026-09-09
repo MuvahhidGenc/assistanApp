@@ -186,16 +186,27 @@ async def test_e2e_4_failure_then_alternative(tmp_path: Path):
                     "path": str(tmp_path / "ghost.txt"),
                     "new_name": "x.txt",
                 },
+                    "required_capabilities": ["filesystem.rename"],
             },
             # LLM sees the failure and re-asks.
-            {"kind": "re_reason", "reason": "rename failed"},
+                {
+                    "kind": "re_reason",
+                    "reason": "rename failed",
+                    "required_capabilities": ["filesystem.rename"],
+                },
             # Alternative: write the file directly.
             {
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": str(target), "content": "recovered"},
+                    "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "recovered", "evidence_ids": []},
+                {
+                    "kind": "complete",
+                    "summary": "recovered",
+                    "evidence_ids": [],
+                    "required_capabilities": ["filesystem.write"],
+                },
         ],
     )
     outcome = await orch.process_turn("Recover from failure")

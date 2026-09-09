@@ -86,6 +86,42 @@ async def test_worker_send_message():
 
 
 @pytest.mark.asyncio
+async def test_worker_status_callback_accepts_v3_phase_vocabulary():
+    from hermes.runtime.orchestrator import V3AgentPhase
+    from hermes.ui.state import ActivityMode
+
+    worker = BackgroundWorker()
+    worker._app = MagicMock()
+    worker._notifications_enabled = False
+    worker.on_event = lambda e, p: None
+    worker._wire_agent_callbacks()
+
+    callback = worker._app.agent._on_status
+    await callback(V3AgentPhase.REASONING, "Reasoning", {})
+
+    assert worker.state.activity is ActivityMode.THINKING
+
+
+@pytest.mark.asyncio
+async def test_worker_maps_v3_observing_and_awaiting_user_phases():
+    from hermes.runtime.orchestrator import V3AgentPhase
+    from hermes.ui.state import ActivityMode
+
+    worker = BackgroundWorker()
+    worker._app = MagicMock()
+    worker._notifications_enabled = False
+    worker.on_event = lambda e, p: None
+    worker._wire_agent_callbacks()
+    callback = worker._app.agent._on_status
+
+    await callback(V3AgentPhase.OBSERVING, "Observing", {})
+    assert worker.state.activity is ActivityMode.EXECUTING
+
+    await callback(V3AgentPhase.AWAITING_USER, "Which file?", {})
+    assert worker.state.activity is ActivityMode.IDLE
+
+
+@pytest.mark.asyncio
 async def test_worker_resolve_approval_sets_future():
     worker = BackgroundWorker()
     loop = asyncio.get_running_loop()

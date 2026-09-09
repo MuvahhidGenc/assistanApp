@@ -1,3 +1,3 @@
-from hermes.agent.orchestrator import AgentOrchestrator, AgentPhase, AgentState
+"""Test-only V2 semantic helpers, excluded from the production client."""
 
-__all__ = ["AgentOrchestrator", "AgentPhase", "AgentState"]
+__all__: list[str] = []

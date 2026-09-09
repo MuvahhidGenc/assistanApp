@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from hermes.app.bootstrap import HermesApplication, create_application
+from hermes.runtime.orchestrator import V3AgentPhase
 from hermes.ui.notifications import notify_error, notify_task_completed
 from hermes.ui.state import ActivityMode, ConnectionStatus, UIState
 from hermes.utils.logging import get_logger
@@ -277,7 +278,7 @@ class BackgroundWorker:
         secret = get_or_create_rpc_secret()
         try:
             self._rpc_server = LocalToolRpcServer(
-                self._app.agent._executor,
+                self._app.agent.tool_executor,
                 self._loop,
                 host=host,
                 port=port,
@@ -383,15 +384,24 @@ class BackgroundWorker:
 
         self._app.agent._on_approval_required = on_approval
 
-        async def on_agent_status(phase, message: str, extra: dict | None = None) -> None:
-            from hermes.runtime.orchestrator import AgentPhase
-
+        async def on_agent_status(
+            phase: V3AgentPhase | Any,
+            message: str,
+            extra: dict | None = None,
+        ) -> None:
+            phase_value = str(getattr(phase, "value", phase)).casefold()
             activity = ActivityMode.THINKING
-            if phase in (AgentPhase.EXECUTING, AgentPhase.VERIFYING):
+            if phase_value in ("executing", "verifying", "observing"):
                 activity = ActivityMode.EXECUTING
-            elif phase == AgentPhase.AWAITING_APPROVAL:
+            elif phase_value == "awaiting_approval":
                 activity = ActivityMode.AWAITING_APPROVAL
-            elif phase == AgentPhase.COMPLETED:
+            elif phase_value in (
+                "awaiting_user",
+                "completed",
+                "failed",
+                "cancelled",
+                "idle",
+            ):
                 activity = ActivityMode.IDLE
             text = (message or "").strip()
             if text:

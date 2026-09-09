@@ -13,40 +13,17 @@ be sensitive.
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-_SESSION_FORBIDDEN_PATTERNS = (
-    re.compile(r"password\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"api[_-]?key\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"secret\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"token\s*[:=][^\s,;]+", re.IGNORECASE),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"sk-[A-Za-z0-9]{16,}"),
-    re.compile(r"ghp_[A-Za-z0-9]{16,}"),
-    re.compile(r"xox[abp]-[A-Za-z0-9-]{16,}"),
-)
+from hermes.memory.security import atomic_write_json, read_json_file, scrub_text
 
 
 def _scrub_session_text(text: str) -> str:
-    """Redact obvious secret-shaped values from a session turn.
-
-    Sessions can hold arbitrary user text. When the user pastes an
-    API key or password, the runtime must not let it sit in plain text
-    on disk. The scrubber replaces the secret-looking substring with
-    ``[REDACTED]`` so the user can still see the shape of what was
-    pasted, but the secret bytes are gone.
-    """
-    if not text:
-        return text
-    for pattern in _SESSION_FORBIDDEN_PATTERNS:
-        text = pattern.sub("[REDACTED]", text)
-    return text
+    """Compatibility export for the shared memory security boundary."""
+    return scrub_text(text)
 
 
 def _utc_now_iso() -> str:
@@ -84,19 +61,32 @@ class SessionMemory:
     # ---- write ---------------------------------------------------------
 
     def record(self, role: str, content: str) -> SessionTurn:
+        return self.record_many(((role, content),))[0]
+
+    def record_many(
+        self,
+        entries: tuple[tuple[str, str], ...],
+    ) -> tuple[SessionTurn, ...]:
         from uuid import uuid4
 
-        turn = SessionTurn(
-            role=role,
-            content=_scrub_session_text(content),
-            turn_id=f"t_{uuid4().hex[:12]}",
+        turns = tuple(
+            SessionTurn(
+                role=role,
+                content=_scrub_session_text(content),
+                turn_id=f"t_{uuid4().hex[:12]}",
+            )
+            for role, content in entries
         )
-        self._turns.append(turn)
+        previous = list(self._turns)
+        self._turns.extend(turns)
         if len(self._turns) > self._max_turns:
-            # Drop oldest turns to keep memory bounded.
             self._turns = self._turns[-self._max_turns :]
-        self._persist()
-        return turn
+        try:
+            self._persist()
+        except Exception:
+            self._turns = previous
+            raise
+        return turns
 
     # ---- read ----------------------------------------------------------
 
@@ -110,8 +100,13 @@ class SessionMemory:
     # ---- lifecycle -----------------------------------------------------
 
     def clear(self) -> None:
+        previous = self._turns
         self._turns = []
-        self._persist()
+        try:
+            self._persist()
+        except Exception:
+            self._turns = previous
+            raise
 
     # ---- internals -----------------------------------------------------
 
@@ -123,13 +118,12 @@ class SessionMemory:
             "schema_version": 1,
             "turns": [turn.to_dict() for turn in self._turns],
         }
-        self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self._path, payload)
 
     def _load(self) -> None:
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
+        data = read_json_file(self._path)
+        if int(data.get("schema_version", 0)) != 1:
+            raise ValueError("Unsupported session memory schema version")
         turns: list[SessionTurn] = []
         for entry in data.get("turns", []):
             turns.append(

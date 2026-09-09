@@ -20,7 +20,12 @@ def _resolve_folder_path(raw: str) -> Path:
         raise ValueError("path required")
     target = Path(text).expanduser()
     if not target.is_absolute():
-        target = Path.home() / "Desktop" / target
+        from hermes.context.system_paths import current_user_desktop_path
+
+        desktop = current_user_desktop_path()
+        if desktop is None:
+            raise ValueError("Current user Desktop path could not be observed")
+        target = desktop / target
     return target.resolve()
 
 
@@ -31,11 +36,19 @@ def _resolve_git_target(ctx: VerifierContext) -> Path | None:
         url = str(ctx.tool_arguments.get("repo_url") or ctx.tool_arguments.get("url") or "")
         repo_name = Path(urlparse(url.replace("git@", "https://")).path).stem or "repo"
         if repo_name:
-            return (Path.home() / "Desktop" / repo_name).resolve()
+            from hermes.context.system_paths import current_user_desktop_path
+
+            desktop = current_user_desktop_path()
+            return (desktop / repo_name).resolve() if desktop is not None else None
         return None
     target = Path(raw).expanduser()
     if not target.is_absolute():
-        target = Path.home() / "Desktop" / target
+        from hermes.context.system_paths import current_user_desktop_path
+
+        desktop = current_user_desktop_path()
+        if desktop is None:
+            return None
+        target = desktop / target
     return target.resolve()
 
 
@@ -366,7 +379,14 @@ class OpenPathVerifier(BaseVerifier):
         try:
             target = Path(raw).expanduser()
             if not target.is_absolute():
-                target = Path.home() / "Desktop" / target
+                from hermes.context.system_paths import current_user_desktop_path
+
+                desktop = current_user_desktop_path()
+                if desktop is None:
+                    raise ValueError(
+                        "Current user Desktop path could not be observed"
+                    )
+                target = desktop / target
             target = target.resolve()
         except Exception as exc:
             return VerificationResult(

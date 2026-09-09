@@ -88,8 +88,14 @@ async def test_real_server_client_round_trip():
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": "/tmp/v3_real_chat.txt", "content": "real server"},
+                "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "done", "evidence_ids": []},
+            {
+                "kind": "complete",
+                "summary": "done",
+                "evidence_ids": [],
+                "required_capabilities": ["filesystem.write"],
+            },
         ]
     )
     transport = httpx.MockTransport(handler)
@@ -118,6 +124,62 @@ async def test_real_server_client_round_trip():
 
 
 @pytest.mark.asyncio
+async def test_reasoning_transport_sends_v3_contract_as_system_message():
+    """The live chat endpoint must receive the V3 decision contract.
+
+    Without the system message the production server returns a normal
+    conversational answer, which cannot be parsed as a runtime decision.
+    """
+    from hermes.server.client import HermesServerClient
+
+    handler = _ChatHandler(
+        [
+            {
+                "kind": "complete",
+                "summary": "ok",
+                "evidence_ids": [],
+                "required_capabilities": [],
+            }
+        ]
+    )
+    server = HermesServerClient(
+        base_url="http://vps.example",
+        api_key="test-key",
+        model="hermes-agent",
+        timeout=5.0,
+        verify_ssl=False,
+        session_key=None,
+    )
+    server._client = httpx.AsyncClient(
+        base_url="http://vps.example",
+        transport=httpx.MockTransport(handler),
+        headers=server._build_headers(),
+    )
+    client = HermesServerReasoningClient(server)
+    prompt = ReasoningPrompt(
+        user_message="say hello",
+        world_snapshot={},
+        recent_events=(),
+        available_capabilities=(),
+        correlation_id="turn_test",
+        task_id="task_test",
+        client_session_id="session_test",
+    )
+
+    await client.reason(prompt)
+
+    body = json.loads(handler.requests[0].content)
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["messages"][0]["role"] == "system"
+    assert "produce a single JSON object" in body["messages"][0]["content"]
+    assert body["messages"][1]["role"] == "user"
+    user_envelope = json.loads(body["messages"][1]["content"])
+    assert user_envelope["protocol"].startswith("V3_RUNTIME_DECISION")
+    assert "available_capabilities" in user_envelope
+    await server.close()
+
+
+@pytest.mark.asyncio
 async def test_full_runtime_through_real_http_transport(tmp_path: Path):
     """Wire ``build_v3_application`` to a real HermesServerClient backed by
     a MockTransport; the runtime must talk to the real client and the
@@ -129,8 +191,14 @@ async def test_full_runtime_through_real_http_transport(tmp_path: Path):
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": str(tmp_path / "v3_real.txt"), "content": "real chat ok"},
+                "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "wrote file", "evidence_ids": []},
+            {
+                "kind": "complete",
+                "summary": "wrote file",
+                "evidence_ids": [],
+                "required_capabilities": ["filesystem.write"],
+            },
         ]
     )
     transport = httpx.MockTransport(handler)

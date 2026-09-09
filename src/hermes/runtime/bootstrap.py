@@ -30,9 +30,11 @@ from typing import Any
 
 from hermes.capability import create_default_capability_registry
 from hermes.execution_log import ExecutionLogStore
+from hermes.memory import RuntimeMemory
 from hermes.reasoning.transport import HermesServerReasoningClient
 from hermes.runtime.executor import V3Executor
 from hermes.runtime.orchestrator import V3Orchestrator
+from hermes.runtime.session import SessionStore
 from hermes.security.approval_manager import (
     ApprovalHandler,
     ApprovalManager,
@@ -68,10 +70,11 @@ class V3Application:
     tool_executor: ToolExecutor
     policy_engine: PolicyEngine
     approval_manager: ApprovalManager
+    memory: RuntimeMemory
+    session_store: SessionStore
 
     async def process_message(self, message: str, session_id: str | None = None) -> str:
-        outcome = await self.orchestrator.process_turn(message)
-        return outcome.reply
+        return await self.orchestrator.process_message(message, session_id=session_id)
 
 
 def build_v3_application(
@@ -81,6 +84,9 @@ def build_v3_application(
     on_status: Callable[[Any, str, dict[str, Any]], Any] | None = None,
     approval_provider: ApprovalProvider | None = None,
     memory: Any = None,
+    turn_timeout_seconds: float = 300.0,
+    initial_session_id: str | None = None,
+    session_id_sink: Callable[[str], None] | None = None,
 ) -> V3Application:
     """Construct the V3 application.
 
@@ -97,10 +103,10 @@ def build_v3_application(
             ``ApprovalManager`` has no handler and any policy decision
             of ``REQUIRE_APPROVAL`` falls through to ``REJECT``. Tests
             inject a deterministic provider.
-        memory: Optional memory facade exposing ``episodic`` and
-            ``long_term`` adapters. The runtime consults it read-only
-            to enrich the LLM prompt. Defaults to a no-op facade so
-            production keeps working without persistent memory.
+        memory: Optional memory facade. Production defaults to durable
+            session, episodic and long-term stores under ``log_dir``.
+        initial_session_id: Previously persisted client session to resume.
+        session_id_sink: Called when the runtime creates a new session.
     """
     if log_dir is None:
         from hermes.config.paths import client_state_dir
@@ -127,7 +133,12 @@ def build_v3_application(
     from hermes.reasoning import ReasoningRuntime
 
     if memory is None:
-        memory = _NoOpMemory()
+        memory = RuntimeMemory(log_dir / "memory")
+    session_store = SessionStore(directory=log_dir / "sessions")
+    if initial_session_id is None:
+        initial_session_id = session_store.load_active_session_id()
+    if session_id_sink is None:
+        session_id_sink = session_store.save_active_session_id
 
     executor = V3Executor.from_defaults(
         execution_log=log,
@@ -143,45 +154,35 @@ def build_v3_application(
         execution_log=log,
         memory=memory,
     )
+    world_model = WorldModel()
+    from hermes.context.system_paths import current_user_known_folders
+
+    world_model.update_environment(
+        known_folders=current_user_known_folders(),
+    )
     orchestrator = V3Orchestrator(
         runtime=runtime,
         executor=executor,
         execution_log=log,
+        world_model=world_model,
         on_status=on_status,
+        turn_timeout_seconds=turn_timeout_seconds,
+        memory=memory,
+        session_store=session_store,
+        session_id_sink=session_id_sink,
     )
+    if initial_session_id:
+        orchestrator.state.current_session_id = initial_session_id
     return V3Application(
         orchestrator=orchestrator,
-        world_model=orchestrator._world_model,
+        world_model=world_model,
         execution_log=log,
         tool_executor=tool_executor,
         policy_engine=policy,
         approval_manager=approval,
+        memory=memory,
+        session_store=session_store,
     )
-
-
-class _NoOpMemory:
-    """No-op memory facade.
-
-    When the caller does not pass a memory object, the runtime still
-    works — the LLM just sees an empty memory view. This keeps
-    production simple while letting tests inject real memory layers.
-    """
-
-    @property
-    def episodic(self):
-        class _E:
-            def query(self, *args, **kwargs):
-                return ()
-
-        return _E()
-
-    @property
-    def long_term(self):
-        class _L:
-            def all_facts(self):
-                return ()
-
-        return _L()
 
 
 def _provider_to_handler(provider: ApprovalProvider) -> ApprovalHandler:

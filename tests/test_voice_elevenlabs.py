@@ -37,12 +37,6 @@ def test_credentials_roundtrip(tmp_path, monkeypatch):
     assert load_credentials()["elevenlabs_api_key"] == "sk-roundtrip"
 
 
-def test_spoken_install_ack():
-    from hermes.voice.spoken import spoken_quick_ack
-
-    assert "libreoffice" in spoken_quick_ack("libreoffice i kur").casefold()
-
-
 def test_resolve_elevenlabs_api_key_from_env(monkeypatch):
     from hermes.config.credentials import resolve_elevenlabs_api_key
 

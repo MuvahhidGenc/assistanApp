@@ -83,6 +83,14 @@ class ReReason:
 
 
 @dataclass(frozen=True)
+class MemoryFact:
+    """A durable fact the user explicitly asked Hermes to remember."""
+
+    key: str
+    value: str
+
+
+@dataclass(frozen=True)
 class Decision:
     """A typed decision produced by the reasoning layer."""
 
@@ -93,6 +101,8 @@ class Decision:
     complete: Complete | None = None
     re_reason: ReReason | None = None
     correlation_id: str = ""
+    required_capabilities: tuple[str, ...] = ()
+    memory_facts: tuple[MemoryFact, ...] = ()
 
     # ---- factories ---------------------------------------------------------
 

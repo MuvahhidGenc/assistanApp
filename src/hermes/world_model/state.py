@@ -33,7 +33,11 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from hermes.world_model.evidence import EvidenceRecord
+    from hermes.world_model.reference import ReferenceBinding
 
 
 def _utc_now_iso() -> str:
@@ -164,6 +168,14 @@ class WorldModel:
         self._evidence: list[EvidenceRecord] = []
         self._references: dict[str, ReferenceBinding] = {}
 
+    def reset(self) -> None:
+        """Clear all current-world state before restoring another session."""
+        with self._lock:
+            self._environment = EnvironmentState()
+            self._task = TaskState()
+            self._evidence = []
+            self._references = {}
+
     # ---- environment -----------------------------------------------------
 
     @property
@@ -224,8 +236,13 @@ class WorldModel:
     def mark_requirement_satisfied(self, capability: str, evidence_id: str) -> None:
         with self._lock:
             updated: list[TaskRequirement] = []
+            matched = False
             for req in self._task.requirements:
-                if req.capability == capability and not req.satisfied:
+                if (
+                    not matched
+                    and req.capability == capability
+                    and not req.satisfied
+                ):
                     updated.append(
                         TaskRequirement(
                             capability=req.capability,
@@ -234,12 +251,56 @@ class WorldModel:
                             evidence=(*req.evidence, evidence_id),
                         )
                     )
+                    matched = True
                 else:
                     updated.append(req)
             self._task = TaskState(
                 objective=self._task.objective,
                 status=self._task.status,
                 requirements=tuple(updated),
+                uncertainty=self._task.uncertainty,
+                relevant_context=self._task.relevant_context,
+            )
+
+    def ensure_requirements(self, capabilities: tuple[str, ...]) -> None:
+        """Add newly declared task requirements without losing progress."""
+        with self._lock:
+            existing = {requirement.capability for requirement in self._task.requirements}
+            additions = tuple(
+                TaskRequirement(capability=capability)
+                for capability in capabilities
+                if capability and capability not in existing
+            )
+            if not additions:
+                return
+            self._task = TaskState(
+                objective=self._task.objective,
+                status=self._task.status,
+                requirements=(*self._task.requirements, *additions),
+                uncertainty=self._task.uncertainty,
+                relevant_context=self._task.relevant_context,
+            )
+
+    def reconcile_requirements(self, capabilities: tuple[str, ...]) -> None:
+        """Replace the semantic requirement set while preserving matched evidence."""
+        with self._lock:
+            previous: dict[str, list[TaskRequirement]] = {}
+            for requirement in self._task.requirements:
+                previous.setdefault(requirement.capability, []).append(requirement)
+            reconciled: list[TaskRequirement] = []
+            for capability in capabilities:
+                if not capability:
+                    continue
+                candidates = previous.get(capability, [])
+                reconciled.append(
+                    candidates.pop(0)
+                    if candidates
+                    else TaskRequirement(capability=capability)
+                )
+            self._task = TaskState(
+                objective=self._task.objective,
+                status=self._task.status,
+                requirements=tuple(reconciled),
                 uncertainty=self._task.uncertainty,
                 relevant_context=self._task.relevant_context,
             )
@@ -279,6 +340,13 @@ class WorldModel:
     def evidence_for(self, capability: str) -> tuple["EvidenceRecord", ...]:
         with self._lock:
             return tuple(e for e in self._evidence if e.capability == capability)
+
+    def evidence_by_id(self, evidence_id: str) -> "EvidenceRecord | None":
+        with self._lock:
+            return next(
+                (evidence for evidence in self._evidence if evidence.evidence_id == evidence_id),
+                None,
+            )
 
     # ---- references ------------------------------------------------------
 

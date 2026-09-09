@@ -1,11 +1,8 @@
-from hermes.context.conversational_context import ActiveFocus, ConversationalContext
-from hermes.context.reference_resolver import ReferenceResolver, ResolutionResult
-from hermes.context.task_state import TaskParameters
+"""Context package.
 
-__all__ = [
-    "ActiveFocus",
-    "ConversationalContext",
-    "ReferenceResolver",
-    "ResolutionResult",
-    "TaskParameters",
-]
+V3 imports only concrete current-state helpers such as ``system_paths``.
+Legacy conversational/reference modules are not loaded as package side
+effects.
+"""
+
+__all__: list[str] = []

@@ -82,8 +82,14 @@ async def test_scenario_1_create_folder_and_write(tmp_path: Path):
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": str(file_in_folder), "content": "scenario 1"},
+                "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "ok", "evidence_ids": []},
+            {
+                "kind": "complete",
+                "summary": "ok",
+                "evidence_ids": [],
+                "required_capabilities": ["filesystem.write"],
+            },
         ],
     )
     reply = await app.orchestrator.process_message("write test.txt in HermesSmoke")
@@ -114,8 +120,14 @@ async def test_scenario_2_read_file(tmp_path: Path):
                 "kind": "action",
                 "capability": "filesystem.read",
                 "arguments": {"path": str(target)},
+                "required_capabilities": ["filesystem.read"],
             },
-            {"kind": "complete", "summary": "read", "evidence_ids": []},
+            {
+                "kind": "complete",
+                "summary": "read",
+                "evidence_ids": [],
+                "required_capabilities": ["filesystem.read"],
+            },
         ],
     )
     reply = await app.orchestrator.process_message("read scenario2.txt")
@@ -138,18 +150,35 @@ async def test_scenario_3_missing_file_triggers_rereason(tmp_path: Path):
                 "kind": "action",
                 "capability": "filesystem.read",
                 "arguments": {"path": str(tmp_path / "ghost.txt")},
+                "required_capabilities": ["filesystem.read"],
             },
-            {"kind": "re_reason", "reason": "file missing"},
+            {
+                "kind": "re_reason",
+                "reason": "file missing",
+                "required_capabilities": ["filesystem.read"],
+            },
             {
                 "kind": "observation_request",
                 "observation_type": "filesystem.list",
                 "target": str(tmp_path),
+                "required_capabilities": ["filesystem.read"],
             },
-            {"kind": "complete", "summary": "recovered", "evidence_ids": []},
+            {
+                "kind": "complete",
+                "summary": "recovered",
+                "evidence_ids": [],
+                "required_capabilities": ["filesystem.read"],
+            },
+            {
+                "kind": "user_question",
+                "question": "Dosya bulunamadı; başka bir yol belirtir misiniz?",
+                "required_capabilities": ["filesystem.read"],
+            },
         ],
     )
-    reply = await app.orchestrator.process_message("read ghost")
-    assert reply == "recovered"
+    outcome = await app.orchestrator.process_turn("read ghost")
+    assert outcome.completed is False
+    assert "bulunamadı" in outcome.reply
     # Failure is recorded in world model evidence.
     assert any("failed" in e.claim.lower() for e in app.world_model.evidence)
     # Recovery evidence pair is on disk.
@@ -168,8 +197,18 @@ async def test_scenario_4_system_inspect(tmp_path: Path):
     app = _bootstrap(
         tmp_path,
         [
-            {"kind": "action", "capability": "system.inspect", "arguments": {}},
-            {"kind": "complete", "summary": "ok", "evidence_ids": []},
+            {
+                "kind": "action",
+                "capability": "system.inspect",
+                "arguments": {},
+                "required_capabilities": ["system.inspect"],
+            },
+            {
+                "kind": "complete",
+                "summary": "ok",
+                "evidence_ids": [],
+                "required_capabilities": ["system.inspect"],
+            },
         ],
     )
     reply = await app.orchestrator.process_message("inspect system")
@@ -195,15 +234,26 @@ async def test_scenario_5_recovery_via_alternative(tmp_path: Path):
                     "path": str(tmp_path / "ghost.txt"),
                     "new_name": "x.txt",
                 },
+                    "required_capabilities": ["filesystem.rename"],
             },
             # Attempt 2 — re-reason, pick a different capability
-            {"kind": "re_reason", "reason": "rename failed"},
+                {
+                    "kind": "re_reason",
+                    "reason": "rename failed",
+                    "required_capabilities": ["filesystem.rename"],
+                },
             {
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": str(final), "content": "recovered"},
+                    "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "ok", "evidence_ids": []},
+                {
+                    "kind": "complete",
+                    "summary": "ok",
+                    "evidence_ids": [],
+                    "required_capabilities": ["filesystem.write"],
+                },
         ],
     )
     reply = await app.orchestrator.process_message("rename ghost then write")
@@ -220,10 +270,7 @@ async def test_scenario_5_recovery_via_alternative(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_scenario_6_goal_completion_requires_verified_evidence(tmp_path: Path):
     """The LLM returns ``complete`` with evidence ids, but the runtime must
-    not assert goal completion unless the evidence is real. Here the
-    LLM-supplied evidence_ids point to nothing — the runtime should
-    still surface the summary as the user reply, but should not pretend
-    the evidence is verified in the World Model."""
+    not assert goal completion unless the cited evidence is real."""
     app = _bootstrap(
         tmp_path,
         [
@@ -234,20 +281,25 @@ async def test_scenario_6_goal_completion_requires_verified_evidence(tmp_path: P
                     "path": str(tmp_path / "scenario6.txt"),
                     "content": "completed",
                 },
+                "required_capabilities": ["filesystem.write"],
             },
             {
                 "kind": "complete",
                 "summary": "task complete",
                 "evidence_ids": ["ev_unverified"],
+                "required_capabilities": ["filesystem.write"],
+            },
+            {
+                "kind": "user_question",
+                "question": "Doğrulama kanıtı eksik; yeniden gözlemleyeyim mi?",
+                "required_capabilities": ["filesystem.write"],
             },
         ],
     )
-    reply = await app.orchestrator.process_message("do it")
-    assert reply == "task complete"
-    # The verifier confirmed the action — so evidence is present in the
-    # world model and the runtime does not silently invent verification.
-    successes = [e for e in app.world_model.evidence if "succeeded" in e.claim.lower()]
-    assert successes
+    outcome = await app.orchestrator.process_turn("do it")
+    assert outcome.completed is False
+    assert app.world_model.task.status != "complete"
+    assert "kanıtı eksik" in outcome.reply
 
 
 # ---------------------------------------------------------------------------

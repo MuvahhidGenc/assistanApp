@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import sys
+import uuid
 from pathlib import Path
 
 _FOLDER_ALIASES: dict[str, str] = {
@@ -23,6 +25,15 @@ _FOLDER_ALIASES: dict[str, str] = {
     "muzik": "Music",
     "müzik": "Music",
     "music": "Music",
+}
+
+_WINDOWS_KNOWN_FOLDER_IDS: dict[str, str] = {
+    "Desktop": "B4BFCC3A-DB2C-424C-B029-7FE99A87C641",
+    "Documents": "FDD39AD0-238F-46AF-ADB4-6C85480369C7",
+    "Downloads": "374DE290-123F-4565-9164-39C4925E467B",
+    "Pictures": "33E28130-4E1E-4676-835A-98395C3BC3BB",
+    "Music": "4BD8D571-6D19-48D3-BE97-422220080E43",
+    "Videos": "18989B1D-99B5-455B-841C-AB7C74E4DDFC",
 }
 
 # Turkish locative/ablative/plural suffixes attached to folder names.
@@ -84,6 +95,74 @@ def resolve_known_folder(message: str) -> Path | None:
     if folder_name is None:
         return None
     return (Path.home() / folder_name).resolve()
+
+
+def current_user_known_folders() -> dict[str, str]:
+    """Observe canonical known-folder paths for the current OS user."""
+    if sys.platform != "win32":
+        return {
+            name.casefold(): str((Path.home() / name).resolve())
+            for name in _WINDOWS_KNOWN_FOLDER_IDS
+        }
+
+    observed: dict[str, str] = {}
+    for name, folder_id in _WINDOWS_KNOWN_FOLDER_IDS.items():
+        path = _windows_known_folder_path(folder_id)
+        if path is not None:
+            observed[name.casefold()] = str(path)
+    return observed
+
+
+def current_user_desktop_path() -> Path | None:
+    """Return the OS-reported Desktop for the current user, if observable."""
+    value = current_user_known_folders().get("desktop")
+    return Path(value) if value else None
+
+
+def _windows_known_folder_path(folder_id: str) -> Path | None:
+    import ctypes
+    from ctypes import wintypes
+
+    class _Guid(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    value = uuid.UUID(folder_id)
+    fields = value.fields
+    data4 = (ctypes.c_ubyte * 8)(
+        fields[3],
+        fields[4],
+        *fields[5].to_bytes(6, byteorder="big"),
+    )
+    guid = _Guid(fields[0], fields[1], fields[2], data4)
+    output = ctypes.c_wchar_p()
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(_Guid),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_wchar_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+    result = shell32.SHGetKnownFolderPath(
+        ctypes.byref(guid),
+        0,
+        None,
+        ctypes.byref(output),
+    )
+    if result != 0 or not output.value:
+        return None
+    try:
+        return Path(output.value).resolve()
+    finally:
+        ole32.CoTaskMemFree(ctypes.cast(output, ctypes.c_void_p))
 
 
 def extract_file_type_pattern(message: str) -> str | None:

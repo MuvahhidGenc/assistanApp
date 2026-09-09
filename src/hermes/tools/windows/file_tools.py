@@ -17,7 +17,12 @@ def resolve_user_path(raw: str) -> Path:
     path = Path(text).expanduser()
     if path.is_absolute():
         return path.resolve()
-    return (Path.home() / "Desktop" / path).resolve()
+    from hermes.context.system_paths import current_user_desktop_path
+
+    desktop = current_user_desktop_path()
+    if desktop is None:
+        raise ValueError("Current user Desktop path could not be observed")
+    return (desktop / path).resolve()
 
 
 def resolve_unique_file_path(path: Path) -> Path:
@@ -98,7 +103,17 @@ class ListDirectoryTool(BaseTool):
     async def execute(self, path: str = "", **kwargs: Any) -> ToolExecutionResult:
         raw = (path or kwargs.get("dir") or ".").strip()
         try:
-            target = resolve_user_path(raw) if raw not in (".", "") else Path.home() / "Desktop"
+            if raw not in (".", ""):
+                target = resolve_user_path(raw)
+            else:
+                from hermes.context.system_paths import current_user_desktop_path
+
+                target = current_user_desktop_path()
+                if target is None:
+                    return ToolExecutionResult(
+                        success=False,
+                        error="Current user Desktop path could not be observed",
+                    )
             if not target.exists():
                 return ToolExecutionResult(success=False, error=f"Yol yok: {target}")
             if target.is_file():
