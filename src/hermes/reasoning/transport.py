@@ -208,3 +208,48 @@ def _parse_decision_json(text: str) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     raise ValueError(f"Reasoning reply was not valid JSON: {stripped[:200]!r}")
+
+def _build_repair_payload(
+    original_payload: str,
+    broken_reply: str,
+    validation_error: str = "",
+) -> str:
+    """Request one bounded schema repair from non-compliant gateways."""
+    context = _json_mod.loads(original_payload)
+    context["protocol"] = (
+        "V3_RUNTIME_DECISION_REPAIR: The previous answer violated the "
+        "protocol. Return exactly one JSON object and no prose. Do not "
+        "execute the task on the server."
+    )
+    context["repair"] = {
+            "allowed_kinds": [
+                "action",
+                "observation_request",
+                "user_question",
+                "complete",
+                "re_reason",
+            ],
+            "required_schema": {
+                "kind": "string",
+                "capability": "string when kind=action",
+                "arguments": "object when kind=action",
+                "observation_type": (
+                    "non-empty registered read-only capability when "
+                    "kind=observation_request"
+                ),
+                "parameters": "object when kind=observation_request",
+                "target": "string when kind=observation_request",
+                "question": "string when kind=user_question",
+                "summary": "string when kind=complete",
+                "evidence_ids": "array when kind=complete",
+                "required_capabilities": (
+                    "required array containing only available capability names"
+                ),
+                "memory_facts": "array of explicit durable user facts",
+            },
+            "invalid_previous_answer": (broken_reply or "")[:1500],
+            "validation_error": (validation_error or "")[:500],
+    }
+    return _json_mod.dumps(context, ensure_ascii=False, sort_keys=True)
+
+
