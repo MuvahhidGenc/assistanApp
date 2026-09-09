@@ -47,12 +47,16 @@ from __future__ import annotations
 import json as _json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from hermes.capability import CapabilityRegistry, windows_capabilities
+from hermes.capability import (
+    CapabilityContract,
+    CapabilityRegistry,
+    windows_capabilities,
+)
 from hermes.execution_log import ExecutionLogStore, EventEnvelope
-from hermes.reasoning.decision import Decision, DecisionKind
+from hermes.reasoning.decision import Decision, DecisionKind, MemoryFact
 from hermes.reasoning.transport import (
     LlmReasoningClient,
     ReasoningPrompt,
@@ -109,6 +113,9 @@ class ReasoningRuntime:
             available_capabilities=capabilities,
             recent_events=tuple(events),
             extra={"memory": memory_view} if memory_view else {},
+            correlation_id=correlation_id,
+            task_id=_task_id_for(correlation_id),
+            client_session_id=self._client_session_id(),
         )
         reply = await self.client.reason(prompt)
         return self._build_decision(reply, correlation_id)
@@ -123,10 +130,7 @@ class ReasoningRuntime:
         if self.memory is None:
             return {}
         view: dict[str, Any] = {}
-        try:
-            episodes = list(self.memory.episodic.query() or [])
-        except Exception:  # noqa: BLE001 — memory is advisory, never crash
-            episodes = []
+        episodes = list(self.memory.episodic.query() or [])
         # Keep the most recent 5 episodes, summarise them.
         view["recent_episodes"] = [
             {
@@ -136,10 +140,7 @@ class ReasoningRuntime:
             }
             for ep in episodes[-5:]
         ]
-        try:
-            facts = list(self.memory.long_term.all_facts() or [])
-        except Exception:  # noqa: BLE001
-            facts = []
+        facts = list(self.memory.long_term.all_facts() or [])
         # Filter out obvious secret-shaped values defensively.
         view["long_term_facts"] = [
             {"key": fact.key, "value": _scrub_value(fact.value)}
@@ -147,6 +148,11 @@ class ReasoningRuntime:
             if not _looks_like_secret(fact.value)
         ]
         return view
+
+    def _client_session_id(self) -> str:
+        if self.memory is None:
+            return ""
+        return str(getattr(self.memory, "active_session_id", "") or "").strip()
 
     async def re_reason(
         self,
@@ -173,12 +179,19 @@ class ReasoningRuntime:
             _serialise_capability(cap, self.capability_registry.get(cap.capability))
             for cap in windows_capabilities(self.capability_registry)
         )
+        memory_view = self._memory_view()
+        extra = {"re_reason": reason}
+        if memory_view:
+            extra["memory"] = memory_view
         prompt = ReasoningPrompt(
             user_message=user_message,
             world_snapshot=snapshot,
             available_capabilities=capabilities,
             recent_events=tuple(events),
-            extra={"re_reason": reason},
+            extra=extra,
+            correlation_id=correlation_id,
+            task_id=_task_id_for(correlation_id),
+            client_session_id=self._client_session_id(),
         )
         reply = await self.client.reason(prompt)
         return self._build_decision(reply, correlation_id)
@@ -224,43 +237,100 @@ class ReasoningRuntime:
             ) from exc
 
         if kind is DecisionKind.ACTION:
-            return Decision.of_action(
-                capability=str(data.get("capability") or ""),
-                arguments=dict(data.get("arguments") or {}),
-                rationale=str(data.get("rationale") or ""),
-                expected_observation=str(data.get("expected_observation") or ""),
-                correlation_id=correlation_id,
+            capability = _required_text(data, "capability", kind)
+            return _with_required_capabilities(
+                Decision.of_action(
+                    capability=capability,
+                    arguments=dict(data.get("arguments") or {}),
+                    rationale=str(data.get("rationale") or ""),
+                    expected_observation=str(data.get("expected_observation") or ""),
+                    correlation_id=correlation_id,
+                ),
+                data,
             )
         if kind is DecisionKind.OBSERVATION_REQUEST:
-            return Decision.of_observation_request(
-                observation_type=str(data.get("observation_type") or ""),
-                target=str(data.get("target") or ""),
-                rationale=str(data.get("rationale") or ""),
-                parameters=dict(data.get("parameters") or {}),
-                correlation_id=correlation_id,
+            return _with_required_capabilities(
+                Decision.of_observation_request(
+                    observation_type=_required_text(data, "observation_type", kind),
+                    target=str(data.get("target") or ""),
+                    rationale=str(data.get("rationale") or ""),
+                    parameters=dict(data.get("parameters") or {}),
+                    correlation_id=correlation_id,
+                ),
+                data,
             )
         if kind is DecisionKind.USER_QUESTION:
             options = tuple(str(o) for o in (data.get("options") or ()))
-            return Decision.of_user_question(
-                question=str(data.get("question") or ""),
-                why=str(data.get("why") or data.get("rationale") or ""),
-                options=options,
-                correlation_id=correlation_id,
+            return _with_required_capabilities(
+                Decision.of_user_question(
+                    question=_required_text(data, "question", kind),
+                    why=str(data.get("why") or data.get("rationale") or ""),
+                    options=options,
+                    correlation_id=correlation_id,
+                ),
+                data,
             )
         if kind is DecisionKind.COMPLETE:
             evidence_ids = tuple(str(e) for e in (data.get("evidence_ids") or ()))
-            return Decision.of_complete(
-                summary=str(data.get("summary") or ""),
-                evidence_ids=evidence_ids,
-                correlation_id=correlation_id,
+            return _with_required_capabilities(
+                Decision.of_complete(
+                    summary=_required_text(data, "summary", kind),
+                    evidence_ids=evidence_ids,
+                    correlation_id=correlation_id,
+                ),
+                data,
             )
         if kind is DecisionKind.RE_REASON:
-            return Decision.of_re_reason(
-                reason=str(data.get("reason") or ""),
-                correlation_id=correlation_id,
+            return _with_required_capabilities(
+                Decision.of_re_reason(
+                    reason=str(data.get("reason") or ""),
+                    correlation_id=correlation_id,
+                ),
+                data,
             )
         # Defensive: future enum values raise.
         raise ValueError(f"Unsupported decision kind: {kind!r}")
+
+
+def _required_text(
+    data: dict[str, Any], field_name: str, kind: DecisionKind
+) -> str:
+    value = str(data.get(field_name) or "").strip()
+    if not value:
+        raise ValueError(
+            f"LLM {kind.value} decision requires non-empty {field_name!r}"
+        )
+    return value
+
+
+def _with_required_capabilities(
+    decision: Decision, data: dict[str, Any]
+) -> Decision:
+    raw = data.get("required_capabilities") or ()
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("LLM decision field 'required_capabilities' must be an array")
+    required = tuple(
+        capability
+        for capability in (str(value).strip() for value in raw)
+        if capability
+    )
+    raw_facts = data.get("memory_facts") or ()
+    if not isinstance(raw_facts, (list, tuple)):
+        raise ValueError("LLM decision field 'memory_facts' must be an array")
+    facts: list[MemoryFact] = []
+    for raw_fact in raw_facts:
+        if not isinstance(raw_fact, dict):
+            raise ValueError("Each memory fact must be an object")
+        key = str(raw_fact.get("key") or "").strip()
+        value = str(raw_fact.get("value") or "").strip()
+        if not key or not value:
+            raise ValueError("Memory facts require non-empty key and value")
+        facts.append(MemoryFact(key=key, value=value))
+    return replace(
+        decision,
+        required_capabilities=required,
+        memory_facts=tuple(facts),
+    )
 
 
 def _payload_to_dict(payload: Any) -> dict[str, Any]:
@@ -273,20 +343,36 @@ def _payload_to_dict(payload: Any) -> dict[str, Any]:
     return {"value": str(payload)}
 
 
+def _task_id_for(correlation_id: str) -> str:
+    normalized = str(correlation_id or "").strip()
+    if normalized.startswith("turn_"):
+        return f"task_{normalized[5:]}"
+    return f"task_{normalized}" if normalized else ""
+
+
 def _serialise_capability(summary: Any, contract: CapabilityContract | None = None) -> dict[str, Any]:
     return {
         "name": summary.capability,
-        "default_tool": summary.default_tool,
-        "allowed_overrides": list(summary.allowed_overrides),
         "risk_level": summary.risk_level,
         "execution_target": summary.execution_target,
         "has_verifier": summary.has_verifier,
         "purpose": _purpose_for(contract, summary.capability),
+        "input_schema": dict(contract.input_schema) if contract else {},
+        "output_schema": dict(contract.output_schema) if contract else {},
         "side_effects": [s.value for s in contract.side_effects] if contract else [],
         "preconditions": list(contract.preconditions) if contract else [],
         "known_limitations": list(contract.known_limitations) if contract else [],
         "observation_value": list(contract.observation_value) if contract else [],
         "failure_semantics": contract.failure_semantics.value if contract else "",
+        "estimated_cost": contract.estimated_cost if contract else "",
+        "verification": (
+            {
+                "method": contract.verification.method,
+                "timeout_seconds": contract.verification.timeout_seconds,
+            }
+            if contract and contract.verification
+            else None
+        ),
     }
 
 

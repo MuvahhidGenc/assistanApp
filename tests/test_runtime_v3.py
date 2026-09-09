@@ -36,7 +36,7 @@ from hermes.security.policy_engine import AuditLogger, PolicyEngine
 from hermes.tools.executor import ToolExecutor
 from hermes.tools.registry import create_default_registry
 from hermes.tools.verifiers.registry import create_default_verifier_registry
-from hermes.world_model import WorldModel
+from hermes.world_model import EvidenceSource, WorldModel
 
 
 # ---------------------------------------------------------------------------
@@ -118,13 +118,59 @@ def _build_orchestrator(
 async def test_orchestrator_runs_one_iteration_for_complete(tmp_path: Path):
     orchestrator, log, _ = _build_orchestrator(
         tmp_path,
-        replies=[{"kind": "complete", "summary": "done", "evidence_ids": ["ev_a"]}],
+        replies=[{"kind": "complete", "summary": "done", "evidence_ids": []}],
     )
     outcome = await orchestrator.process_turn("hi")
     assert outcome.completed is True
     assert outcome.iterations == 1
     assert outcome.reply == "done"
     assert orchestrator.state.phase is V3AgentPhase.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_process_turn_preserves_initialized_session_id(tmp_path: Path):
+    orchestrator, _, _ = _build_orchestrator(
+        tmp_path,
+        replies=[{"kind": "complete", "summary": "done", "evidence_ids": []}],
+    )
+    orchestrator.state.current_session_id = "session-fixed"
+
+    await orchestrator.process_turn("hi")
+
+    assert orchestrator.state.current_session_id == "session-fixed"
+
+
+@pytest.mark.asyncio
+async def test_legacy_ui_approval_callback_is_bridged_to_v3_manager(tmp_path: Path):
+    from hermes.config.settings import RiskLevel
+    from hermes.server.models import ApprovalDecision
+
+    approval = ApprovalManager()
+    orchestrator, _, _ = _build_orchestrator(
+        tmp_path,
+        replies=[],
+        approval_manager=approval,
+    )
+    seen = []
+
+    async def approve(request):
+        seen.append(request)
+        return "evet"
+
+    orchestrator._on_approval_required = approve
+    decision = await approval.request_approval(
+        run_id="run-1",
+        action_id="action-1",
+        capability="filesystem.write",
+        tool="write_file",
+        arguments={"path": "x.txt", "content": "x"},
+        risk_level=RiskLevel.NORMAL_MODIFICATION,
+        reason="test",
+    )
+
+    assert decision is ApprovalDecision.APPROVE_ALL
+    assert seen and seen[0].action_id == "action-1"
+    assert approval.is_run_bulk_approved("run-1")
 
 
 @pytest.mark.asyncio
@@ -204,16 +250,27 @@ async def test_orchestrator_reasons_again_after_failed_action(tmp_path: Path):
                 "kind": "action",
                 "capability": "filesystem.rename",
                 "arguments": {"path": str(source), "new_name": target.name},
+                "required_capabilities": ["filesystem.rename"],
             },
             # Second decision: re-reason.
-            {"kind": "re_reason", "reason": "rename failed"},
+            {
+                "kind": "re_reason",
+                "reason": "rename failed",
+                "required_capabilities": ["filesystem.rename"],
+            },
             # Third decision: succeed via filesystem.write.
             {
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": str(target), "content": "hi"},
+                "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "wrote", "evidence_ids": []},
+            {
+                "kind": "complete",
+                "summary": "wrote",
+                "evidence_ids": [],
+                "required_capabilities": ["filesystem.write"],
+            },
         ],
     )
     outcome = await orchestrator.process_turn("rename it")
@@ -291,12 +348,16 @@ async def test_orchestrator_records_evidence_per_capability(tmp_path: Path):
                 "capability": "filesystem.write",
                 "arguments": {"path": str(tmp_path / "out.txt"), "content": "hi"},
             },
-            {"kind": "complete", "summary": "ok", "evidence_ids": ["ev_x"]},
+            {"kind": "complete", "summary": "ok", "evidence_ids": []},
         ],
     )
     await orchestrator.process_turn("write")
-    # Two evidence records: one tool report, one verifier.
-    assert len(orchestrator._world_model.evidence) == 2
+    sources = {item.source for item in orchestrator._world_model.evidence}
+    assert sources == {
+        EvidenceSource.TOOL_REPORT,
+        EvidenceSource.OBSERVATION,
+        EvidenceSource.VERIFIER,
+    }
 
 
 @pytest.mark.asyncio

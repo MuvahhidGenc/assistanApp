@@ -127,10 +127,14 @@ def test_store_is_append_only(tmp_log: ExecutionLogStore):
     assert len(tmp_log.all()) == first_count + 1
 
 
-def test_store_no_event_is_silently_swallowed(tmp_log: ExecutionLogStore):
+def test_store_no_event_is_silently_swallowed(
+    tmp_log: ExecutionLogStore, tmp_path: Path
+):
     """An OS error during write must surface, not be swallowed."""
-    # Force a write to a non-writable parent.
-    bad_store = ExecutionLogStore(path=Path("/proc/no-such-dir/log.jsonl"))
+    # A regular file cannot be used as a parent directory on any platform.
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied", encoding="utf-8")
+    bad_store = ExecutionLogStore(path=blocked_parent / "log.jsonl")
     with pytest.raises(OSError):
         bad_store.append(action_started_payload("c", "a", "x", "y", {}, "client"))
 

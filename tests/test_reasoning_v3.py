@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -140,6 +141,61 @@ def test_parse_decision_json_rejects_non_object():
         _parse_decision_json("[1, 2, 3]")
 
 
+@pytest.mark.asyncio
+async def test_server_reasoning_client_repairs_one_non_json_reply():
+    class _Server:
+        def __init__(self):
+            self.requests = []
+
+        async def chat(self, request):
+            self.requests.append(request)
+            content = (
+                "I cannot access that Windows path."
+                if len(self.requests) == 1
+                else (
+                    '{"kind":"action","capability":"filesystem.list",'
+                    '"arguments":{"path":"C:\\\\\\\\Temp"},'
+                    '"required_capabilities":["filesystem.list"]}'
+                )
+            )
+            return {"choices": [{"message": {"content": content}}]}
+
+    server = _Server()
+    client = HermesServerReasoningClient(server)
+    prompt = ReasoningPrompt(
+        user_message="list C:\\Temp",
+        world_snapshot={},
+        available_capabilities=(
+            {
+                "name": "filesystem.list",
+                    "purpose": "List a directory",
+                "risk_level": "read_only",
+                    "side_effects": [],
+                "input_schema": {
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {"path": {"type": "string"}},
+                },
+            },
+        ),
+        extra={"re_reason": "previous observation was stale"},
+        correlation_id="turn_test",
+        task_id="task_test",
+        client_session_id="session_test",
+    )
+
+    reply = await client.reason(prompt)
+
+    assert reply.decision_json["kind"] == "action"
+    assert len(server.requests) == 2
+    first_payload = json.loads(server.requests[0].message)
+    assert first_payload["turn"]["re_reason"] == "previous observation was stale"
+    repair = json.loads(server.requests[1].message)
+    assert repair["protocol"].startswith("V3_RUNTIME_DECISION_REPAIR")
+    assert repair["turn"] == first_payload["turn"]
+    assert "original_request" not in repair
+
+
 # ---------------------------------------------------------------------------
 # ReasoningRuntime: prompt assembly + decision construction
 # ---------------------------------------------------------------------------
@@ -148,7 +204,15 @@ def test_parse_decision_json_rejects_non_object():
 @pytest.mark.asyncio
 async def test_reason_calls_client_with_world_snapshot(world, log, registry):
     world.update_environment(active_window="notepad.exe")
-    client = _StubClient([{"kind": "user_question", "question": "what file?"}])
+    client = _StubClient(
+        [
+            {
+                "kind": "user_question",
+                "question": "what file?",
+                "required_capabilities": [],
+            }
+        ]
+    )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
     decision = await runtime.reason(user_message="open the file", world_model=world)
 
@@ -164,6 +228,38 @@ async def test_reason_calls_client_with_world_snapshot(world, log, registry):
 
 
 @pytest.mark.asyncio
+async def test_model_capability_contract_has_schemas_but_no_tool_names(
+    world, log, registry
+):
+    client = _StubClient(
+        [
+            {
+                "kind": "complete",
+                "summary": "done",
+                "evidence_ids": [],
+                "required_capabilities": [],
+            }
+        ]
+    )
+    runtime = ReasoningRuntime(
+        client=client,
+        capability_registry=registry,
+        execution_log=log,
+    )
+
+    await runtime.reason(user_message="done", world_model=world)
+
+    contracts = {
+        item["name"]: item for item in client.calls[0].available_capabilities
+    }
+    write_contract = contracts["filesystem.write"]
+    assert write_contract["input_schema"]["type"] == "object"
+    assert "output_schema" in write_contract
+    assert "default_tool" not in write_contract
+    assert "allowed_overrides" not in write_contract
+
+
+@pytest.mark.asyncio
 async def test_reason_returns_action_decision(world, log, registry):
     client = _StubClient(
         [
@@ -172,6 +268,7 @@ async def test_reason_returns_action_decision(world, log, registry):
                 "capability": "filesystem.write",
                 "arguments": {"path": "/tmp/x.txt", "content": "hi"},
                 "rationale": "user asked for it",
+                "required_capabilities": ["filesystem.write"],
             }
         ]
     )
@@ -189,8 +286,9 @@ async def test_reason_returns_observation_request(world, log, registry):
         [
             {
                 "kind": "observation_request",
-                "observation_type": "screen.snapshot",
+                    "observation_type": "screen.observe",
                 "rationale": "need to see what's on screen",
+                "required_capabilities": [],
             }
         ]
     )
@@ -198,25 +296,48 @@ async def test_reason_returns_observation_request(world, log, registry):
     decision = await runtime.reason(user_message="look", world_model=world)
     assert decision.kind is DecisionKind.OBSERVATION_REQUEST
     assert decision.observation_request is not None
-    assert decision.observation_request.observation_type == "screen.snapshot"
+    assert decision.observation_request.observation_type == "screen.observe"
 
 
 @pytest.mark.asyncio
 async def test_reason_returns_complete(world, log, registry):
+    world.record_evidence(
+        EvidenceRecord.make(
+            source=EvidenceSource.OBSERVATION,
+            capability="filesystem.read",
+            claim="observed",
+        )
+    )
+    evidence_ids = [world.evidence[-1].evidence_id]
     client = _StubClient(
-        [{"kind": "complete", "summary": "done", "evidence_ids": ["ev_a", "ev_b"]}]
+        [
+            {
+                "kind": "complete",
+                "summary": "done",
+                "evidence_ids": evidence_ids,
+                "required_capabilities": [],
+            }
+        ]
     )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
     decision = await runtime.reason(user_message="done", world_model=world)
     assert decision.kind is DecisionKind.COMPLETE
     assert decision.complete is not None
     assert decision.complete.summary == "done"
-    assert decision.complete.evidence_ids == ("ev_a", "ev_b")
+    assert decision.complete.evidence_ids == tuple(evidence_ids)
 
 
 @pytest.mark.asyncio
 async def test_reason_returns_re_reason(world, log, registry):
-    client = _StubClient([{"kind": "re_reason", "reason": "insufficient evidence"}])
+    client = _StubClient(
+        [
+            {
+                "kind": "re_reason",
+                "reason": "insufficient evidence",
+                "required_capabilities": [],
+            }
+        ]
+    )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
     decision = await runtime.reason(user_message="again", world_model=world)
     assert decision.kind is DecisionKind.RE_REASON
@@ -225,8 +346,48 @@ async def test_reason_returns_re_reason(world, log, registry):
 
 @pytest.mark.asyncio
 async def test_reason_rejects_unknown_kind(world, log, registry):
-    client = _StubClient([{"kind": "magic"}])
+    client = _StubClient([{"kind": "magic", "required_capabilities": []}])
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
+    with pytest.raises(ValueError):
+        await runtime.reason(user_message="x", world_model=world)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {
+            "kind": "action",
+            "capability": "",
+            "arguments": {},
+            "required_capabilities": [],
+        },
+        {
+            "kind": "observation_request",
+            "observation_type": "",
+            "required_capabilities": [],
+        },
+        {
+            "kind": "user_question",
+            "question": "",
+            "required_capabilities": [],
+        },
+        {
+            "kind": "complete",
+            "summary": "",
+            "evidence_ids": [],
+            "required_capabilities": [],
+        },
+    ],
+)
+async def test_reason_rejects_structurally_invalid_decisions(
+    world, log, registry, reply
+):
+    runtime = ReasoningRuntime(
+        client=_StubClient([reply]),
+        capability_registry=registry,
+        execution_log=log,
+    )
     with pytest.raises(ValueError):
         await runtime.reason(user_message="x", world_model=world)
 
@@ -235,8 +396,17 @@ async def test_reason_rejects_unknown_kind(world, log, registry):
 async def test_re_reason_includes_reason_in_prompt(world, log, registry):
     client = _StubClient(
         [
-            {"kind": "user_question", "question": "?"},
-            {"kind": "action", "capability": "filesystem.read", "arguments": {}},
+            {
+                "kind": "user_question",
+                "question": "?",
+                "required_capabilities": [],
+            },
+            {
+                "kind": "action",
+                "capability": "filesystem.read",
+                "arguments": {"path": "/tmp/x"},
+                "required_capabilities": ["filesystem.read"],
+            },
         ]
     )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
@@ -261,8 +431,14 @@ async def test_observation_request_then_action_loop(world, log, registry):
                 "kind": "observation_request",
                 "observation_type": "filesystem.list",
                 "target": "/tmp",
+                "required_capabilities": [],
             },
-            {"kind": "action", "capability": "filesystem.read", "arguments": {"path": "/tmp/x"}},
+            {
+                "kind": "action",
+                "capability": "filesystem.read",
+                "arguments": {"path": "/tmp/x"},
+                "required_capabilities": ["filesystem.read"],
+            },
         ]
     )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
@@ -277,8 +453,17 @@ async def test_reasoning_loop_can_chain_re_reason_then_action(world, log, regist
     """Continuous reasoning: re_reason first, then a concrete action."""
     client = _StubClient(
         [
-            {"kind": "re_reason", "reason": "need more context"},
-            {"kind": "action", "capability": "screen.observe", "arguments": {}},
+            {
+                "kind": "re_reason",
+                "reason": "need more context",
+                "required_capabilities": [],
+            },
+            {
+                "kind": "action",
+                "capability": "screen.observe",
+                "arguments": {},
+                "required_capabilities": ["screen.observe"],
+            },
         ]
     )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
@@ -293,7 +478,16 @@ async def test_reasoning_loop_can_chain_re_reason_then_action(world, log, regist
 async def test_reason_correlation_filters_events(world, log, registry):
     log.append(action_started_payload("corr-1", "a1", "fs.read", "read_file", {}, "client"))
     log.append(action_started_payload("corr-2", "a2", "fs.write", "write_file", {}, "client"))
-    client = _StubClient([{"kind": "complete", "summary": "ok"}])
+    client = _StubClient(
+        [
+            {
+                "kind": "complete",
+                "summary": "ok",
+                "evidence_ids": [],
+                "required_capabilities": [],
+            }
+        ]
+    )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
     await runtime.reason(user_message="x", world_model=world, correlation_id="corr-1")
     # Only events tagged corr-1 must be in the recent_events payload.
@@ -310,7 +504,15 @@ async def test_reason_correlation_filters_events(world, log, registry):
 @pytest.mark.asyncio
 async def test_runtime_does_not_inspect_user_language(world, log, registry):
     """The runtime does not regex on user_message — it passes it whole."""
-    client = _StubClient([{"kind": "user_question", "question": "?"}])
+    client = _StubClient(
+        [
+            {
+                "kind": "user_question",
+                "question": "?",
+                "required_capabilities": [],
+            }
+        ]
+    )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
     await runtime.reason(user_message="lütfen dosyayı aç", world_model=world)
     call = client.calls[0]
@@ -321,7 +523,16 @@ async def test_runtime_does_not_inspect_user_language(world, log, registry):
 @pytest.mark.asyncio
 async def test_runtime_does_not_call_security_layer(world, log, registry):
     """Defence-in-depth: runtime does not invoke Policy/Approval directly."""
-    client = _StubClient([{"kind": "action", "capability": "filesystem.write", "arguments": {}}])
+    client = _StubClient(
+        [
+            {
+                "kind": "action",
+                "capability": "filesystem.write",
+                "arguments": {"path": "/tmp/x", "content": "x"},
+                "required_capabilities": ["filesystem.write"],
+            }
+        ]
+    )
     runtime = ReasoningRuntime(client=client, capability_registry=registry, execution_log=log)
     decision = await runtime.reason(user_message="x", world_model=world)
     assert decision.action is not None

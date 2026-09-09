@@ -145,5 +145,6 @@ def create_application(
         server=server,
         approval_provider=approval_provider,
         memory=memory,
+        turn_timeout_seconds=float(settings.client.agent_step_timeout_seconds),
     )
     return HermesApplication(settings=settings, server=server, agent=v3.orchestrator)

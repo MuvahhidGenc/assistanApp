@@ -26,7 +26,7 @@ It does **not**:
 from __future__ import annotations
 
 import asyncio
-import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -52,6 +52,11 @@ from hermes.reasoning.decision import Action
 from hermes.security.approval_manager import ApprovalManager
 from hermes.tools.executor import ToolApprovalRequiredError, ToolExecutor, ToolResultPayload
 from hermes.tools.registry import ToolRegistry, create_default_registry
+from hermes.tools.verifiers.base import (
+    Observation,
+    VerificationResult,
+    VerificationStatus,
+)
 from hermes.tools.verifiers.registry import VerifierRegistry, create_default_verifier_registry
 
 
@@ -78,7 +83,15 @@ class ActionExecutionOutcome:
 
     @property
     def verified(self) -> bool:
-        return self.verification_envelope is not None
+        if self.verification_envelope is None:
+            return False
+        return getattr(self.verification_envelope.payload, "status", "") == "verified"
+
+    @property
+    def verification_status(self) -> str:
+        if self.verification_envelope is None:
+            return "unknown"
+        return str(getattr(self.verification_envelope.payload, "status", "unknown"))
 
 
 @dataclass
@@ -154,7 +167,7 @@ class V3Executor:
             )
 
         # 2. Record ACTION_STARTED.
-        action_id = action_id or f"act_{int(time.time() * 1000)}"
+        action_id = action_id or f"act_{uuid.uuid4().hex[:12]}"
         started_envelope = action_started_payload(
             correlation_id=correlation_id,
             action_id=action_id,
@@ -163,7 +176,7 @@ class V3Executor:
             arguments=selection.arguments,
             execution_target="client",
             risk_level=str(selection.risk_level.value) if selection.risk_level else None,
-            security_decision="allow",
+            security_decision=None,
             approval_outcome=None,
         )
         self.execution_log.append(started_envelope)
@@ -181,6 +194,7 @@ class V3Executor:
         payload: ToolResultPayload | None = None
         error: str | None = None
         approval_outcome: str | None = None
+        cancelled = False
         try:
             from hermes.server.models import ToolCallRequest
             from hermes.tools.execution_target import ExecutionTarget
@@ -195,6 +209,7 @@ class V3Executor:
                     call,
                     run_id=correlation_id,
                     runtime=ExecutionTarget.CLIENT,
+                    verify=False,
                 )
             except ToolApprovalRequiredError as approval_exc:
                 # The V2 chain requires approval. Delegate to the new
@@ -221,6 +236,7 @@ class V3Executor:
                         call,
                         run_id=correlation_id,
                         runtime=ExecutionTarget.CLIENT,
+                        verify=False,
                     )
                 else:
                     # Denied / cancelled / rejected: do not run the tool.
@@ -230,9 +246,16 @@ class V3Executor:
                         success=False,
                         error=error,
                     )
+        except asyncio.CancelledError:
+            cancelled = True
+            error = "action_cancelled"
         except Exception as exc:  # noqa: BLE001 — record and continue
             error = str(exc)
-            payload = None
+            payload = ToolResultPayload(
+                tool_call_id=action_id,
+                success=False,
+                error=error,
+            )
 
         # 4. Record ACTION_FINISHED.
         from datetime import datetime, timezone
@@ -259,20 +282,24 @@ class V3Executor:
             payload=payload,
             started_envelope=started_envelope,
             finished_envelope=finished_envelope,
-            error=error,
+            error=(payload.error if payload and payload.error else error),
             approval_outcome=approval_outcome,
         )
 
+        if cancelled:
+            raise asyncio.CancelledError
+
         # 5. Run the bound verifier (if any) and record the result.
         if payload is not None:
-            verification_envelope = await self._verify(
+            verification_envelope, observation_envelope = await self._verify(
                 action=action,
+                selection=selection,
                 correlation_id=correlation_id,
                 action_id=action_id,
                 payload=payload,
             )
-            if verification_envelope is not None:
-                outcome.verification_envelope = verification_envelope
+            outcome.verification_envelope = verification_envelope
+            outcome.observation_envelope = observation_envelope
 
         # 6. The runtime owns recovery decisions. The orchestrator will
         #    call `executor.attempt_recovery(...)` when the runtime returns
@@ -289,43 +316,83 @@ class V3Executor:
         self,
         *,
         action: Action,
+        selection: CapabilityToolSelection,
         correlation_id: str,
         action_id: str,
         payload: ToolResultPayload,
-    ) -> EventEnvelope | None:
-        verifier = self.verifier_registry.get(action.capability)
-        if verifier is None and self.capability_registry is not None:
-            contract = self.capability_registry.get(action.capability)
-            if contract is not None:
-                for tool_name in (contract.default_tool, *contract.allowed_overrides):
-                    verifier = self.verifier_registry.get(tool_name)
-                    if verifier is not None:
-                        break
-        if verifier is None:
-            return None
+    ) -> tuple[EventEnvelope, EventEnvelope | None]:
+        verifier = self.verifier_registry.get(selection.tool_name)
+        contract = self.capability_registry.get(action.capability)
+        timeout_seconds = (
+            contract.verification.timeout_seconds
+            if contract is not None and contract.verification is not None
+            else 10.0
+        )
 
         from hermes.tools.verifiers.context import VerifierContext
 
         context = VerifierContext(
-            tool_name=action.capability,
-            tool_arguments=dict(action.arguments),
+            tool_name=selection.tool_name,
+            tool_arguments=dict(selection.arguments),
             execution_success=bool(payload.success),
             execution_output=payload.output,
             execution_error=payload.error,
             run_id=correlation_id,
-            timeout_seconds=10.0,
+            timeout_seconds=timeout_seconds,
         )
-        try:
-            result = await self.verifier_registry.verify(context)
-        except Exception:  # noqa: BLE001 — verifier failures must not break execution
-            return None
-        return record_verification(
+        if verifier is None:
+            if contract is not None and contract.risk_level.value == "read_only":
+                result = VerificationResult(
+                    status=VerificationStatus.NOT_REQUIRED,
+                    method="read_only_observation",
+                    details={"reason": "read_only_capability"},
+                    observation=Observation(
+                        source=action.capability,
+                        data=_observation_payload(payload.output),
+                    ),
+                )
+            else:
+                result = VerificationResult(
+                    status=VerificationStatus.UNKNOWN,
+                    method=(
+                        contract.verification.method
+                        if contract is not None and contract.verification is not None
+                        else "verifier_unavailable"
+                    ),
+                    details={"reason": "no_bound_verifier"},
+                )
+        else:
+            try:
+                result = await self.verifier_registry.verify(context)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — convert failure into explicit evidence
+                result = VerificationResult(
+                    status=VerificationStatus.UNKNOWN,
+                    method=f"{selection.tool_name}_verifier_error",
+                    details={"reason": "verifier_error", "error": str(exc)},
+                )
+
+        observation_envelope: EventEnvelope | None = None
+        if result.observation is not None:
+            observation_envelope = self.execution_log.append(
+                observation_recorded_payload(
+                    correlation_id=correlation_id,
+                    action_id=action_id,
+                    source=result.observation.source,
+                    observation_type="structured",
+                    data=dict(result.observation.data),
+                )
+            )
+
+        verification_envelope = record_verification(
             self.execution_log,
             correlation_id=correlation_id,
             action_id=action_id,
-            verifier_name=type(verifier).__name__,
+            verifier_name=type(verifier).__name__ if verifier is not None else "None",
             result=result,
         )
+        return verification_envelope, observation_envelope
 
     async def attempt_recovery(  # noqa: D401
         self,
@@ -365,6 +432,12 @@ def _duration_ms(started_at: str, finished_at: str) -> int:
         return max(0, int((end - start).total_seconds() * 1000))
     except ValueError:
         return 0
+
+
+def _observation_payload(output: Any) -> dict[str, Any]:
+    if isinstance(output, dict):
+        return dict(output)
+    return {"value": output}
 
 
 __all__ = ["ActionExecutionOutcome", "V3Executor"]

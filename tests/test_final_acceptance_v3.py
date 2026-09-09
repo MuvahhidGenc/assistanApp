@@ -224,14 +224,7 @@ async def test_acceptance_7_to_10_runtime_records_every_event(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_acceptance_11_complete_evidence_required(tmp_path: Path):
     """A LLM-returned ``complete`` with bogus evidence_ids must not
-    silently claim goal completion. The world model is still updated,
-    but the orchestrator's task_status reflects the runtime's view
-    (set to "complete" by the LLM decision), not silent success.
-
-    The invariant we actually assert: the orchestrator's task state
-    only transitions to ``complete`` when the LLM returns ``complete``
-    with a non-empty evidence payload — the world model records the
-    evidence claims. The runtime does not invent evidence.
+    silently claim goal completion.
     """
     from hermes.execution_log import ExecutionLogStore
     from hermes.security.policy_engine import AuditLogger, PolicyEngine
@@ -270,20 +263,19 @@ async def test_acceptance_11_complete_evidence_required(tmp_path: Path):
                 "summary": "all done",
                 "evidence_ids": ["ev_self"],
             },
+            {
+                "kind": "user_question",
+                "question": "Kanıt kimliği geçersiz; yeniden doğrulayayım mı?",
+            },
         ]
     )
     runtime = ReasoningRuntime(client=llm, capability_registry=caps, execution_log=log)
     orch = V3Orchestrator(runtime=runtime, executor=executor, execution_log=log)
-    await orch.process_turn("do it")
-    # The runtime wrote a real action and recorded a verifier. The LLM
-    # chose ``complete``; the runtime's task_status reflects that
-    # choice. The world model carries the evidence (tool_report +
-    # verifier) regardless of whether the LLM's evidence_ids are
-    # "real".
-    assert orch.world_model.task.status == "complete"
-    # The world model is *not* a liar: it carries two evidence records
-    # from the actual execution.
-    assert len(orch.world_model.evidence) >= 1
+    outcome = await orch.process_turn("do it")
+    assert outcome.completed is False
+    assert orch.world_model.task.status != "complete"
+    assert "geçersiz" in outcome.reply
+    assert len(orch.world_model.evidence) >= 3
 
 
 # ---------------------------------------------------------------------------
@@ -328,16 +320,27 @@ async def test_acceptance_12_unexpected_triggers_re_reason(tmp_path: Path):
                     "path": str(tmp_path / "ghost.txt"),
                     "new_name": "x",
                 },
+                    "required_capabilities": ["filesystem.rename"],
             },
             # LLM re-asks after the failure.
-            {"kind": "re_reason", "reason": "rename failed"},
+                {
+                    "kind": "re_reason",
+                    "reason": "rename failed",
+                    "required_capabilities": ["filesystem.rename"],
+                },
             # LLM picks an alternative.
             {
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": str(target), "content": "ok"},
+                    "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "ok", "evidence_ids": []},
+                {
+                    "kind": "complete",
+                    "summary": "ok",
+                    "evidence_ids": [],
+                    "required_capabilities": ["filesystem.write"],
+                },
         ]
     )
     runtime = ReasoningRuntime(client=llm, capability_registry=caps, execution_log=log)

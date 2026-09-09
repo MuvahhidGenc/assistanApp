@@ -249,7 +249,12 @@ def open_path_on_windows(
 ) -> dict[str, Any]:
     target = Path(path).expanduser()
     if not target.is_absolute():
-        target = Path.home() / "Desktop" / target
+        from hermes.context.system_paths import current_user_desktop_path
+
+        desktop = current_user_desktop_path()
+        if desktop is None:
+            raise ValueError("Current user Desktop path could not be observed")
+        target = desktop / target
     if not target.exists():
         raise ValueError(f"Yol bulunamadi: {target}")
 

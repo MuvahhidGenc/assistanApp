@@ -10,47 +10,28 @@ an optional `expires_at` so the runtime can retire stale facts.
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-_FORBIDDEN_KEYS = (
-    "password",
-    "api_key",
-    "apikey",
-    "secret",
-    "token",
-    "private_key",
-    "ssh_key",
+from hermes.memory.security import (
+    atomic_write_json,
+    is_sensitive_key,
+    read_json_file,
+    scrub_text,
 )
-
-
-_FORBIDDEN_VALUE_PATTERNS = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"sk-[A-Za-z0-9]{16,}"),         # OpenAI-style keys
-    re.compile(r"ghp_[A-Za-z0-9]{16,}"),        # GitHub PAT
-    re.compile(r"xox[abp]-[A-Za-z0-9-]{16,}"),  # Slack tokens
-)
-
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _is_secret_key(key: str) -> bool:
-    lowered = key.strip().lower()
-    return any(forbidden in lowered for forbidden in _FORBIDDEN_KEYS)
+    return is_sensitive_key(key)
 
 
 def _scrub_value(value: str) -> str:
-    scrubbed = value
-    for pattern in _FORBIDDEN_VALUE_PATTERNS:
-        scrubbed = pattern.sub("[REDACTED]", scrubbed)
-    return scrubbed
+    return scrub_text(value)
 
 
 @dataclass(frozen=True)
@@ -90,26 +71,53 @@ class LongTermMemory:
         provenance: str = "",
         expires_at: str | None = None,
     ) -> LongTermFact:
-        if _is_secret_key(key):
-            raise ValueError(
-                f"Refusing to remember {key!r}: long-term memory does not store secrets."
-            )
-        scrubbed = _scrub_value(value)
-        fact = LongTermFact(
-            key=key,
-            value=scrubbed,
+        return self.remember_many(
+            ((key, value),),
             provenance=provenance,
             expires_at=expires_at,
-        )
-        self._facts[key] = fact
-        self._persist()
-        return fact
+        )[0]
+
+    def remember_many(
+        self,
+        entries: tuple[tuple[str, str], ...],
+        *,
+        provenance: str = "",
+        expires_at: str | None = None,
+    ) -> tuple[LongTermFact, ...]:
+        facts: list[LongTermFact] = []
+        for key, value in entries:
+            if _is_secret_key(key):
+                raise ValueError(
+                    f"Refusing to remember {key!r}: long-term memory does not store secrets."
+                )
+            facts.append(
+                LongTermFact(
+                    key=key,
+                    value=_scrub_value(value),
+                    provenance=provenance,
+                    expires_at=expires_at,
+                )
+            )
+        previous = dict(self._facts)
+        for fact in facts:
+            self._facts[fact.key] = fact
+        try:
+            self._persist()
+        except Exception:
+            self._facts = previous
+            raise
+        return tuple(facts)
 
     def forget(self, key: str) -> bool:
-        existed = self._facts.pop(key, None) is not None
-        if existed:
+        previous = self._facts.pop(key, None)
+        if previous is None:
+            return False
+        try:
             self._persist()
-        return existed
+        except Exception:
+            self._facts[key] = previous
+            raise
+        return True
 
     def recall(self, key: str) -> LongTermFact | None:
         fact = self._facts.get(key)
@@ -130,13 +138,12 @@ class LongTermMemory:
             "schema_version": 1,
             "facts": {key: fact.to_dict() for key, fact in self._facts.items()},
         }
-        self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self._path, payload)
 
     def _load(self) -> None:
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
+        data = read_json_file(self._path)
+        if int(data.get("schema_version", 0)) != 1:
+            raise ValueError("Unsupported long-term memory schema version")
         facts = data.get("facts", {})
         loaded: dict[str, LongTermFact] = {}
         for key, entry in facts.items():

@@ -57,7 +57,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Retired semantic/orchestration stacks are intentionally absent from
+        # the V3 production executable. V3 semantics are owned by the VPS
+        # ReasoningRuntime contract.
+        "hermes.agent",
+        "hermes.intent",
+        "hermes.mission.engine",
+        "hermes.mission.planner",
+        "hermes.mission.selection",
+    ],
     noarchive=False,
     optimize=0,
 )

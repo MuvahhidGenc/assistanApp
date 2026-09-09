@@ -180,14 +180,25 @@ async def test_smoke_re_reason_recovers(tmp_path: Path):
                 "kind": "action",
                 "capability": "filesystem.rename",
                 "arguments": {"path": str(tmp_path / "ghost.txt"), "new_name": "y.txt"},
+                "required_capabilities": ["filesystem.rename"],
             },
-            {"kind": "re_reason", "reason": "missing file"},
+            {
+                "kind": "re_reason",
+                "reason": "missing file",
+                "required_capabilities": ["filesystem.rename"],
+            },
             {
                 "kind": "action",
                 "capability": "filesystem.write",
                 "arguments": {"path": str(final), "content": "recovered"},
+                "required_capabilities": ["filesystem.write"],
             },
-            {"kind": "complete", "summary": "recovered", "evidence_ids": []},
+            {
+                "kind": "complete",
+                "summary": "recovered",
+                "evidence_ids": [],
+                "required_capabilities": ["filesystem.write"],
+            },
         ],
     )
     outcome = await orch.process_turn("recover")

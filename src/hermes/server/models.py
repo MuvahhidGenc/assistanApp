@@ -69,16 +69,25 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    system: str | None = None
     session_id: str | None = None
     stream: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+    response_format: dict[str, Any] | None = None
 
     def to_openai_body(self, model: str) -> dict[str, Any]:
-        return {
+        messages: list[dict[str, str]] = []
+        if self.system:
+            messages.append({"role": "system", "content": self.system})
+        messages.append({"role": "user", "content": self.message})
+        body: dict[str, Any] = {
             "model": model,
-            "messages": [{"role": "user", "content": self.message}],
+            "messages": messages,
             "stream": self.stream,
         }
+        if self.response_format:
+            body["response_format"] = dict(self.response_format)
+        return body
 
 
 class RunCreate(BaseModel):

@@ -27,6 +27,8 @@ The reasoning layer decides what to record.
 
 from hermes.memory.episodic import EpisodicMemory, EpisodicRecord
 from hermes.memory.long_term import LongTermMemory, LongTermFact
+from hermes.memory.runtime import RuntimeMemory
+from hermes.memory.security import MemoryPersistenceError, MemorySecurityError
 from hermes.memory.session import SessionMemory, SessionTurn, _scrub_session_text
 
 __all__ = [
@@ -34,6 +36,9 @@ __all__ = [
     "EpisodicRecord",
     "LongTermFact",
     "LongTermMemory",
+    "MemoryPersistenceError",
+    "MemorySecurityError",
+    "RuntimeMemory",
     "SessionMemory",
     "SessionTurn",
     "_scrub_session_text",
