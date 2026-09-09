@@ -8,6 +8,7 @@ except ModuleNotFoundError:  # Linux / no GUI env — shell import deferred to r
     ctk = None  # type: ignore
 from hermes.ui.modern_theme import apply_appearance, CARD, BG, NEON_CYAN, NEON_BLUE, CARD_BORDER, FONT_MONO
 from hermes.ui.v4_store import V4UIStore
+from hermes.ui.v4_home import V4Home
 
 NAV_ITEMS = ["HOME","CHAT","AGENT","MEMORY","SKILLS","COMPUTER","BROWSER","TASKS","ACTIVITY","SETTINGS"]
 
@@ -41,16 +42,21 @@ class V4AppShell(ctk.CTk):
                                 font=FONT_MONO, height=30, anchor="w",
                                 command=lambda i=item: self._set_nav(i))
             btn.pack(fill="x", padx=12, pady=2)
-        # Content stub
+        # Content container + HOME = V4Home (Phase 2B-1)
         self.content = ctk.CTkFrame(main, fg_color=BG)
         self.content.pack(side="left", fill="both", expand=True)
-        self.content_label = ctk.CTkLabel(self.content, text="V4 SHELL  •  Select a screen", text_color=NEON_CYAN, font=("Segoe UI", 24, "bold"))
-        self.content_label.pack(expand=True)
+        self.home = V4Home(self.content, self.store)
 
     def _set_nav(self, item: str):
         self._nav_active = item
-        self.content_label.configure(text=f"V4 SHELL  •  {item}")
-        # Minimal: reflect in store (read-only observation only)
+        # HOME screen renders V4Home premium component (Phase 2B-1)
+        for w in self.content.winfo_children():
+            w.destroy()
+        if item == "HOME" and ctk is not None:
+            self.home = V4Home(self.content, self.store)
+        else:
+            self.content_label = ctk.CTkLabel(self.content, text=f"V4 SHELL  •  {item}", text_color=NEON_CYAN, font=("Segoe UI", 24, "bold"))
+            self.content_label.pack(expand=True)
         snap = self.store.get_snapshot()
 
 if __name__ == "__main__":
