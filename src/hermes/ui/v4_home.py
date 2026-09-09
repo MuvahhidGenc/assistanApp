@@ -26,7 +26,7 @@ class V4Home:
         if ctk is None:
             return
         # Main scrollable frame (handles 1200x800 cleanly)
-        frame = ctk.CTkScrollableFrame(parent, fg_color="rgba(10,11,16,0.95)", corner_radius=0)
+        frame = ctk.CTkScrollableFrame(parent, fg_color="#0a0b10", corner_radius=0)
         frame.pack(fill="both", expand=True, padx=0, pady=0)
         # Subtle vertical divider / background layer (depth, not clutter)
         # Hero / Core — visual focal point (no SciFiHud copy; own design)
@@ -63,7 +63,7 @@ class V4Home:
         ctk.CTkLabel(mission, text=mission_text, text_color="#d8dde8", font=("Segoe UI", 14)).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 12))
 
         # Status row — 4 premium cards (real keys from snapshot; no CPU/RAM/latency)
-        status_row = ctk.CTkFrame(frame, fg_color="rgba(10,11,16,0.0)", corner_radius=0)
+        status_row = ctk.CTkFrame(frame, fg_color=BG, corner_radius=0)
         status_row.pack(fill="x", padx=24, pady=(0, 12))
         status_row.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="s")
         cards = [
