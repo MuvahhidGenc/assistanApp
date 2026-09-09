@@ -18,6 +18,9 @@ class UIEvent:
     action_id: str | None
     payload: dict[str, Any]
 
+# NOTE (review): canonical EventEnvelope has no session_id; task_id maps to correlation_id.
+# Payload is minimal (source_version + kind) to avoid exposing mutable backend objects.
+# If full payload projection needed, extend here; do NOT expose EventEnvelope directly.
 def project(envelope: EventEnvelope) -> UIEvent:
     return UIEvent(
         event_id=envelope.event_id,
