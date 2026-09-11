@@ -351,7 +351,15 @@ class CreateFolderTool(BaseTool):
             return ToolExecutionResult(success=False, error="path gerekli")
         target = Path(raw).expanduser()
         if not target.is_absolute():
-            target = Path.home() / "Desktop" / target
+            from hermes.context.system_paths import current_user_desktop_path
+
+            desktop = current_user_desktop_path()
+            if desktop is None:
+                return ToolExecutionResult(
+                    success=False,
+                    error="Current user Desktop path could not be observed",
+                )
+            target = desktop / target
         try:
             from hermes.tools.windows.input_backend import wants_recreate
 
@@ -393,7 +401,15 @@ class OpenPathTool(BaseTool):
             return ToolExecutionResult(success=False, error="path gerekli")
         target = Path(raw).expanduser()
         if not target.is_absolute():
-            target = Path.home() / "Desktop" / target
+            from hermes.context.system_paths import current_user_desktop_path
+
+            desktop = current_user_desktop_path()
+            if desktop is None:
+                return ToolExecutionResult(
+                    success=False,
+                    error="Current user Desktop path could not be observed",
+                )
+            target = desktop / target
         if not target.exists():
             return ToolExecutionResult(success=False, error=f"Yol bulunamadi: {target}")
         try:
@@ -611,13 +627,21 @@ class GitCloneTool(BaseTool):
             url = f"{url}.git"
 
         dest_raw = (target_dir or kwargs.get("path") or "").strip()
+        from hermes.context.system_paths import current_user_desktop_path
+
+        desktop = current_user_desktop_path()
+        if desktop is None:
+            return ToolExecutionResult(
+                success=False,
+                error="Current user Desktop path could not be observed",
+            )
         if dest_raw:
             target = Path(dest_raw).expanduser()
             if not target.is_absolute():
-                target = Path.home() / "Desktop" / target
+                target = desktop / target
         else:
             repo_name = Path(urlparse(url.replace("git@", "https://")).path).stem or "repo"
-            target = Path.home() / "Desktop" / repo_name
+            target = desktop / repo_name
 
         if target.exists() and any(target.iterdir()):
             return ToolExecutionResult(

@@ -116,6 +116,32 @@ class ToolExecutor:
         user_message: str = "",
         verify: bool = True,
     ) -> ToolResultPayload:
+        """Execute a single tool call through the security chain.
+
+        The V3 runtime drives approval through
+        ``ApprovalManager.request_approval`` (bound to the real
+        ``run_id``). The V3 executor never sets ``skip_approval``; the
+        production security chain always asks the manager before
+        allowing a tool to run.
+
+        Args:
+            tool_call: The tool call to execute.
+            run_id: A correlation id shared with audit, approval, and
+                execution-log events. Production must pass a real id.
+            skip_approval: A *backwards-compat* parameter for the
+                pre-V3 caller surface (mission engine, agent
+                orchestrator, skills executor, RPC server). The V3
+                runtime never sets it. Production callers from V2
+                contexts (none of which are reachable through the
+                production entrypoint — see ``hermes.app.bootstrap``)
+                may set it to ``True`` to skip the user-prompt layer;
+                audit and policy still run.
+            runtime: Where the tool is allowed to run (client/server).
+            user_message: The user's original message (for policy
+                heuristics that look at user phrasing).
+            verify: When True, run the bound verifier and record the
+                verification result.
+        """
         tool_name = tool_call.name
         arguments = tool_call.arguments
 
@@ -164,6 +190,12 @@ class ToolExecutor:
             )
 
         if policy.decision == PolicyDecision.REQUIRE_APPROVAL and not skip_approval:
+            # The approval gate is always consulted. The V3 runtime asks
+            # ``ApprovalManager.request_approval`` when the chain raises
+            # here; if the run is already bulk-approved by a real user
+            # decision, the chain lets the call through. V2 callers
+            # (mission engine, agent orchestrator) may set
+            # ``skip_approval=True``; V3 production never does.
             if not run_id or self._approval.should_require_new_approval(run_id, tool_name):
                 self._audit.log("tool_approval_required", tool=tool_name, reason=policy.reason)
                 raise ToolApprovalRequiredError(tool_call, policy.reason)

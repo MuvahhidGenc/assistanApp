@@ -7,10 +7,30 @@ object so resolution stays one mechanism.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 
-from hermes.agent.application_catalog import WEB_SHORTCUTS, normalize_user_text
+
+_NAVIGATION_SITES = frozenset(
+    {
+        "google",
+        "youtube",
+        "gmail",
+        "facebook",
+        "twitter",
+        "instagram",
+        "linkedin",
+        "github",
+        "bing",
+    }
+)
+
+
+def _normalize_reference_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", text or "").translate(
+        str.maketrans({"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"'})
+    )
 
 
 class SpatialSlot(StrEnum):
@@ -206,7 +226,7 @@ def _parse_number_role(lower: str) -> tuple[int | None, int | None]:
 
 
 def extract_reference_features(text: str) -> ReferenceFeatures:
-    raw = normalize_user_text(text or "").strip()
+    raw = _normalize_reference_text(text).strip()
     lower = raw.casefold()
 
     quoted = None
@@ -249,7 +269,7 @@ def extract_reference_features(text: str) -> ReferenceFeatures:
 
 
 def _catalog_site_in(lower: str) -> bool:
-    return any(name in lower for name in WEB_SHORTCUTS)
+    return any(name in lower for name in _NAVIGATION_SITES)
 
 
 def is_literal_click_query(message: str, extracted: str | None = None) -> bool:

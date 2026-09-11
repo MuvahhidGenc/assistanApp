@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from hermes.agent.orchestrator import AgentOrchestrator
+from hermes.runtime.orchestrator import V3Orchestrator
 from hermes.config.settings import VoiceSettings
 from hermes.utils.logging import get_logger
 from hermes.voice import tts as tts_pipeline
@@ -34,7 +34,7 @@ class VoiceAssistant:
     """
 
     settings: VoiceSettings
-    agent: AgentOrchestrator
+    agent: V3Orchestrator
     on_status: OnUserMessage | None = None
     on_response: Callable[[str, str], Awaitable[None] | None] | None = None
     on_user_input: Callable[[str, str], Awaitable[None] | None] | None = None
@@ -413,19 +413,19 @@ class VoiceAssistant:
         if self.tts:
             self.tts.stop()
         if self._active_request and not self._active_request.done():
+            # V3 cancellation model: the runtime owns the entire
+            # turn (LLM reasoning + tool execution) inside a single
+            # ``process_turn`` call. Cancelling the local task stops
+            # the in-flight turn; no separate server-side ``stop_run``
+            # is needed because the V3 server transport runs inside
+            # the same task and ``asyncio.CancelledError`` propagates
+            # to the LLM call as well.
             self._active_request.cancel()
             try:
                 await self._active_request
             except asyncio.CancelledError:
                 pass
             self._active_request = None
-
-        run_id = self.agent.state.current_run_id
-        if run_id:
-            try:
-                await self.agent._server.stop_run(run_id)
-            except Exception:
-                return
 
     async def _wake_word_loop(self) -> None:
         """Listen for wake words only — not continuous command parsing."""
@@ -584,7 +584,7 @@ class VoiceAssistant:
 
 
 def build_voice_assistant(
-    agent: AgentOrchestrator,
+    agent: V3Orchestrator,
     settings: VoiceSettings,
     stt: SpeechToText | None = None,
     tts: TextToSpeech | None = None,

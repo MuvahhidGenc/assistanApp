@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from hermes.app.bootstrap import HermesApplication, create_application
+from hermes.runtime.orchestrator import V3AgentPhase
 from hermes.ui.notifications import notify_error, notify_task_completed
 from hermes.ui.state import ActivityMode, ConnectionStatus, UIState
 from hermes.utils.logging import get_logger
@@ -277,7 +278,7 @@ class BackgroundWorker:
         secret = get_or_create_rpc_secret()
         try:
             self._rpc_server = LocalToolRpcServer(
-                self._app.agent._executor,
+                self._app.agent.tool_executor,
                 self._loop,
                 host=host,
                 port=port,
@@ -395,15 +396,24 @@ class BackgroundWorker:
 
         self._app.agent._on_approval_required = on_approval
 
-        async def on_agent_status(phase, message: str, extra: dict | None = None) -> None:
-            from hermes.agent.orchestrator import AgentPhase
-
+        async def on_agent_status(
+            phase: V3AgentPhase | Any,
+            message: str,
+            extra: dict | None = None,
+        ) -> None:
+            phase_value = str(getattr(phase, "value", phase)).casefold()
             activity = ActivityMode.THINKING
-            if phase in (AgentPhase.EXECUTING, AgentPhase.VERIFYING):
+            if phase_value in ("executing", "verifying", "observing"):
                 activity = ActivityMode.EXECUTING
-            elif phase == AgentPhase.AWAITING_APPROVAL:
+            elif phase_value == "awaiting_approval":
                 activity = ActivityMode.AWAITING_APPROVAL
-            elif phase == AgentPhase.COMPLETED:
+            elif phase_value in (
+                "awaiting_user",
+                "completed",
+                "failed",
+                "cancelled",
+                "idle",
+            ):
                 activity = ActivityMode.IDLE
             text = (message or "").strip()
             if text:
@@ -417,33 +427,27 @@ class BackgroundWorker:
         self._app.agent._on_status = on_agent_status
 
     def _restore_mission_ui_state(self) -> None:
-        from hermes.mission.store import MissionStore
+        """Populate the V3 session snapshot from V3 state on UI startup.
 
-        mission = MissionStore().load_active()
-        if mission is None:
-            self.state.clear_mission_snapshot()
-            return
-        self.state.set_mission_snapshot(
-            mission_id=mission.mission_id,
-            mission_status=mission.status.value,
-            mission_goal=mission.user_goal,
-            mission_progress=mission.progress_ratio,
-        )
+        V2 ``MissionStore`` is no longer the source of truth — V3
+        orchestrator owns the world model and ``SessionStore``. This
+        method is kept as a UI restore hook so the chat window can
+        display the in-progress session immediately on launch.
+        """
+        # V3: the session snapshot lives in the orchestrator's world
+        # model. Until the user issues a turn, the snapshot is empty;
+        # clear the UI state to avoid a stale "previous mission" banner.
+        self.state.clear_mission_snapshot()
 
     def _sync_mission_ui_from_store(self, mission_id: str | None = None) -> None:
-        from hermes.mission.store import MissionStore
+        """Refresh the UI snapshot from the V3 session store.
 
-        store = MissionStore()
-        mission = store.load(mission_id) if mission_id else store.load_active()
-        if mission is None:
-            self.state.clear_mission_snapshot()
-            return
-        self.state.set_mission_snapshot(
-            mission_id=mission.mission_id,
-            mission_status=mission.status.value,
-            mission_goal=mission.user_goal,
-            mission_progress=mission.progress_ratio,
-        )
+        V2 ``MissionStore`` is no longer used. The UI snapshot now
+        mirrors the V3 ``SessionStore`` so the chat window shows the
+        same state as the orchestrator. When no session is loaded the
+        UI snapshot is cleared.
+        """
+        self.state.clear_mission_snapshot()
 
     async def _reload_config(self) -> None:
         logger.info("worker_reload_config")
