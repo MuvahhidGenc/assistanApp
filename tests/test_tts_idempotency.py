@@ -270,7 +270,10 @@ async def test_create_folder_skips_when_already_exists(tmp_path, monkeypatch):
     desktop = tmp_path / "Desktop"
     folder = desktop / "Test2026"
     folder.mkdir(parents=True)
-    monkeypatch.setattr("hermes.tools.windows.pc_actions.Path.home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes.context.system_paths.current_user_desktop_path",
+        lambda: desktop,
+    )
     tool = CreateFolderTool()
     result = await tool.execute(path="Test2026", user_message="Test2026 klasoru olustur")
     assert result.success

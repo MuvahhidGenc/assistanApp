@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -63,7 +64,7 @@ class VoiceListener:
             from faster_whisper import WhisperModel
 
             self._whisper = WhisperModel("base", device="cpu", compute_type="int8")
-            logger.info("voice_listener_backend", backend="faster-whisper-base")
+            logger.info("voice_listener_backend", backend="faster-whisper-base-int8")
         except Exception as exc:
             logger.info("voice_listener_whisper_skip", error=str(exc))
             self._whisper = None
@@ -80,12 +81,24 @@ class VoiceListener:
         model = self._load_whisper()
         if model is None:
             return None
-        recognizer = sr.Recognizer()
-        recognizer.dynamic_energy_threshold = True
+        if self._google is not None and getattr(self._google, "_recognizer", None) is not None:
+            recognizer = self._google._recognizer
+            microphone = self._google._microphone
+        else:
+            recognizer = sr.Recognizer()
+            recognizer.dynamic_energy_threshold = True
+            recognizer.energy_threshold = 320
+            microphone = sr.Microphone()
         if pause_seconds is not None:
-            recognizer.pause_threshold = max(0.8, float(pause_seconds))
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.35)
+            recognizer.pause_threshold = max(0.9, float(pause_seconds))
+        else:
+            recognizer.pause_threshold = max(0.9, float(recognizer.pause_threshold or 1.2))
+        with microphone as source:
+            # Prefer shared ambient calibration; avoid 350ms every utterance.
+            if not getattr(self._google, "_ambient_calibrated", False):
+                recognizer.adjust_for_ambient_noise(source, duration=0.35)
+                if self._google is not None:
+                    self._google._ambient_calibrated = True
             audio = recognizer.listen(
                 source,
                 timeout=timeout,
@@ -96,7 +109,29 @@ class VoiceListener:
         tmp = Path(name)
         try:
             tmp.write_bytes(audio.get_wav_data())
-            segments, _info = model.transcribe(str(tmp), language="tr", beam_size=3)
+            # Frozen EXE often lacks Silero ONNX under faster_whisper/assets.
+            use_vad = not getattr(sys, "frozen", False)
+            try:
+                segments, _info = model.transcribe(
+                    str(tmp),
+                    language="tr",
+                    beam_size=1,
+                    vad_filter=use_vad,
+                    condition_on_previous_text=False,
+                )
+            except Exception as vad_exc:
+                err = str(vad_exc).casefold()
+                if "silero" in err or "vad" in err or "onnx" in err:
+                    logger.warning("whisper_vad_disabled", error=str(vad_exc))
+                    segments, _info = model.transcribe(
+                        str(tmp),
+                        language="tr",
+                        beam_size=1,
+                        vad_filter=False,
+                        condition_on_previous_text=False,
+                    )
+                else:
+                    raise
             text = " ".join(segment.text for segment in segments).strip()
             return text or None
         finally:

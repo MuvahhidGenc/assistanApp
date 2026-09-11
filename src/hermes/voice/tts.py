@@ -60,6 +60,7 @@ class FallbackTextToSpeech:
     def stop(self) -> None:
         for backend in self._backends:
             backend.stop()
+        stop_all_playback()
 
     async def speak(self, text: str) -> None:
         cleaned = text.strip()
@@ -113,6 +114,23 @@ class PlaybackError(RuntimeError):
     pass
 
 
+_PLAYBACK_PROCS: list[Any] = []
+_PLAYBACK_LOCK = threading.Lock()
+
+
+def stop_all_playback() -> None:
+    """Kill active PowerShell MediaPlayer processes (barge-in)."""
+    with _PLAYBACK_LOCK:
+        procs = list(_PLAYBACK_PROCS)
+        _PLAYBACK_PROCS.clear()
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+
+
 def _play_mp3_powershell(path: str) -> None:
     """Play MP3 via PowerShell System.Windows.Media.MediaPlayer. Raises PlaybackError."""
     import subprocess
@@ -142,11 +160,11 @@ def _play_mp3_powershell(path: str) -> None:
         f"$m = New-Object System.Windows.Media.MediaPlayer; "
         f"$m.Volume = 1.0; "
         f"$m.Open('{uri}'); $m.Play(); "
-        f"Start-Sleep -Milliseconds 500; "
+        f"Start-Sleep -Milliseconds 350; "
         f"for($i=0; $i -lt 200 -and -not $m.NaturalDuration.HasTimeSpan; $i++)"
-        f"{{ Start-Sleep -Milliseconds 100 }}; "
+        f"{{ Start-Sleep -Milliseconds 80 }}; "
         f"while($m.NaturalDuration.HasTimeSpan -and $m.Position -lt $m.NaturalDuration.TimeSpan)"
-        f"{{ Start-Sleep -Milliseconds 120 }}; "
+        f"{{ Start-Sleep -Milliseconds 100 }}; "
         f"$m.Stop(); $m.Close()"
     )
     cmd = [
@@ -160,6 +178,7 @@ def _play_mp3_powershell(path: str) -> None:
         script,
     ]
     try:
+        proc: Any | None = None
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -167,6 +186,8 @@ def _play_mp3_powershell(path: str) -> None:
             startupinfo=hidden_startupinfo(),
             creationflags=hidden_creationflags(),
         )
+        with _PLAYBACK_LOCK:
+            _PLAYBACK_PROCS.append(proc)
         _audit(
             "PLAYBACK_PROCESS_STARTED",
             mechanism="powershell_mediaplayer",
@@ -176,7 +197,8 @@ def _play_mp3_powershell(path: str) -> None:
         stdout_b, stderr_b = proc.communicate(timeout=120)
         returncode = proc.returncode
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
+        if proc is not None:
+            proc.kill()
         _audit(
             "PLAYBACK_FAILED",
             mechanism="powershell_mediaplayer",
@@ -193,6 +215,10 @@ def _play_mp3_powershell(path: str) -> None:
             thread=thread_name,
         )
         raise PlaybackError(str(exc)) from exc
+    finally:
+        with _PLAYBACK_LOCK:
+            if proc is not None and proc in _PLAYBACK_PROCS:
+                _PLAYBACK_PROCS.remove(proc)
 
     stderr = (stderr_b or b"").decode("utf-8", errors="replace").strip()
     stdout = (stdout_b or b"").decode("utf-8", errors="replace").strip()
@@ -257,7 +283,7 @@ class EdgeTurkishTTS:
         return self._available
 
     def stop(self) -> None:
-        return None
+        stop_all_playback()
 
     async def _synthesize_mp3(self, text: str, *, insecure_ssl: bool = False) -> Path:
         import edge_tts
@@ -349,7 +375,7 @@ class WindowsSapiTTS:
         return self._available
 
     def stop(self) -> None:
-        return None
+        stop_all_playback()
 
     def _speak_sync(self, text: str) -> None:
         import pyttsx3
@@ -406,7 +432,7 @@ class ElevenLabsTTS:
         return self._available
 
     def stop(self) -> None:
-        return None
+        stop_all_playback()
 
     def _synthesize_mp3(self, text: str) -> Path | None:
         import httpx

@@ -57,6 +57,7 @@ class SpeechRecognitionSTT:
         self._reason = ""
         self._recognizer = None
         self._microphone = None
+        self._ambient_calibrated = False
         self._init_backend()
 
     def _init_backend(self) -> None:
@@ -65,11 +66,15 @@ class SpeechRecognitionSTT:
 
             self._recognizer = sr.Recognizer()
             self._recognizer.dynamic_energy_threshold = True
-            self._recognizer.energy_threshold = 280
-            self._recognizer.pause_threshold = 0.7
+            self._recognizer.energy_threshold = 300
+            # ~1.2s end-of-speech: fast enough after stop, slow enough not to
+            # cut "Not defterini aç" into "not defter".
+            self._recognizer.pause_threshold = 1.2
+            self._recognizer.non_speaking_duration = 0.5
             self._microphone = sr.Microphone()
             with self._microphone as source:
-                self._recognizer.adjust_for_ambient_noise(source, duration=0.6)
+                self._recognizer.adjust_for_ambient_noise(source, duration=0.45)
+            self._ambient_calibrated = True
         except ImportError:
             self._reason = "speechrecognition paketi yuklu degil"
         except Exception as exc:
@@ -96,10 +101,14 @@ class SpeechRecognitionSTT:
 
         old_pause = self._recognizer.pause_threshold
         if pause_seconds is not None:
-            self._recognizer.pause_threshold = max(0.8, float(pause_seconds))
+            # Floor at 0.9s — aggressive endpoints were creating fake user turns.
+            self._recognizer.pause_threshold = max(0.9, float(pause_seconds))
         try:
             with self._microphone as source:
-                self._recognizer.adjust_for_ambient_noise(source, duration=0.35)
+                # Recalibrate only rarely — every listen costs ~350ms and drifts thresholds.
+                if not self._ambient_calibrated:
+                    self._recognizer.adjust_for_ambient_noise(source, duration=0.35)
+                    self._ambient_calibrated = True
                 audio = self._recognizer.listen(
                     source,
                     timeout=timeout,

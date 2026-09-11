@@ -18,10 +18,11 @@ class ConnectionStatus(StrEnum):
 class ActivityMode(StrEnum):
     IDLE = "idle"
     LISTENING = "listening"
-    THINKING = "thinking"
+    THINKING = "thinking"  # PROCESSING
     SPEAKING = "speaking"
     EXECUTING = "executing"
-    AWAITING_APPROVAL = "awaiting_approval"
+    AWAITING_APPROVAL = "awaiting_approval"  # WAITING
+    ERROR = "error"
 
 
 @dataclass
@@ -48,6 +49,7 @@ class UIState:
     mission_status: str | None = None
     mission_goal: str | None = None
     mission_progress: float = 0.0
+    last_turn_trace: dict[str, Any] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def snapshot(self) -> dict[str, Any]:
@@ -175,15 +177,15 @@ class UIState:
 
     def activity_label(self) -> str:
         labels = {
-            ActivityMode.IDLE: "Hazir",
-            ActivityMode.LISTENING: "Dinliyorum...",
-            ActivityMode.THINKING: "Dusunuyorum...",
-            ActivityMode.SPEAKING: "Konusuyorum...",
-            ActivityMode.EXECUTING: "Calistiriyorum...",
-            ActivityMode.AWAITING_APPROVAL: "Onay bekleniyor",
+            ActivityMode.IDLE: "IDLE",
+            ActivityMode.LISTENING: "LISTENING",
+            ActivityMode.THINKING: "PROCESSING",
+            ActivityMode.SPEAKING: "SPEAKING",
+            ActivityMode.EXECUTING: "EXECUTING",
+            ActivityMode.AWAITING_APPROVAL: "WAITING",
+            ActivityMode.ERROR: "ERROR",
         }
-        if self.status_text and self.activity != ActivityMode.IDLE:
-            return self.status_text
+        # Prefer crisp state chip; keep status_text in the header separately.
         return labels.get(self.activity, self.activity.value)
 
     def activity_color(self) -> str:
@@ -194,6 +196,7 @@ class UIState:
             ActivityMode.SPEAKING: "#c084fc",
             ActivityMode.EXECUTING: "#38bdf8",
             ActivityMode.AWAITING_APPROVAL: "#fb923c",
+            ActivityMode.ERROR: "#ef4444",
         }
         return colors.get(self.activity, "#22d3ee")
 

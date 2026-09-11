@@ -24,6 +24,10 @@ if (root / "assets" / "tray.png").exists():
 
 datas += collect_data_files("customtkinter")
 datas += collect_data_files("edge_tts")
+try:
+    datas += collect_data_files("faster_whisper")
+except Exception:
+    pass
 datas += [(certifi.where(), "certifi")]
 
 hiddenimports = collect_submodules("customtkinter")
@@ -57,7 +61,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Retired semantic/orchestration stacks are intentionally absent from
+        # the V3 production executable. V3 semantics are owned by the VPS
+        # ReasoningRuntime contract.
+        "hermes.agent",
+        "hermes.intent",
+        "hermes.mission.engine",
+        "hermes.mission.planner",
+        "hermes.mission.selection",
+    ],
     noarchive=False,
     optimize=0,
 )

@@ -36,3 +36,6 @@ hermes-client.exe_extracted/
 _tmp_pyc_map/
 _tmp_dis.py
 _tmp_dump_all.py
+
+# HermesClient/ sandbox-only clone
+/HermesClient/

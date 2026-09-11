@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -311,13 +312,46 @@ class PolicyEngine:
 
 
 class AuditLogger:
-    """Append-only audit log with sensitive data redaction."""
+    """Append-only audit log with sensitive data redaction.
 
-    def __init__(self, log_path: str, redact_patterns: list[str] | None = None) -> None:
+    By default the logger redacts values whose **key** matches a
+    secret-shaped token (authorization, password, api_key, secret,
+    token, credential). It also redacts string **values** that look
+    like API keys, GitHub tokens, or other credentials so an argument
+    that smuggles a secret under a non-standard key is still caught.
+    """
+
+    _DEFAULT_KEY_PATTERNS: tuple[str, ...] = (
+        "authorization",
+        "password",
+        "passwd",
+        "api_key",
+        "apikey",
+        "secret",
+        "token",
+        "credential",
+        "private_key",
+        "session_id",
+    )
+
+    _DEFAULT_VALUE_PATTERNS: tuple[str, ...] = (
+        r"sk-[A-Za-z0-9]{16,}",
+        r"ghp_[A-Za-z0-9]{16,}",
+        r"xox[abp]-[A-Za-z0-9-]{16,}",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    )
+
+    def __init__(
+        self,
+        log_path: str,
+        redact_patterns: list[str] | None = None,
+    ) -> None:
         p = Path(log_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         self._path = p
-        self._redact_patterns = [item.lower() for item in (redact_patterns or [])]
+        self._redact_patterns = [item.lower() for item in (redact_patterns or list(self._DEFAULT_KEY_PATTERNS))]
+        import re as _re
+        self._value_patterns = tuple(_re.compile(p) for p in self._DEFAULT_VALUE_PATTERNS)
 
     def _redact(self, data: Any) -> Any:
         if isinstance(data, dict):
@@ -336,6 +370,9 @@ class AuditLogger:
             for pattern in self._redact_patterns:
                 if pattern in lower:
                     return "***REDACTED***"
+            for vpattern in self._value_patterns:
+                if vpattern.search(data):
+                    return "***REDACTED***"
         return data
 
     def log(self, event: str, **kwargs: Any) -> None:
@@ -347,4 +384,6 @@ class AuditLogger:
         line = json.dumps(entry, ensure_ascii=False, default=str)
         with self._path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
         logger.debug("audit_log", audit_event=event)

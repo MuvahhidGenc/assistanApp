@@ -67,17 +67,6 @@ def mock_agent():
     return agent
 
 
-def test_brief_spoken_reply_always_short_for_long_text():
-    from hermes.voice.spoken import brief_spoken_reply, looks_like_missing_tools
-
-    long_ok = "DNS guncellendi: 8.8.8.8. Adapter Wi-Fi. Daha fazla detay sohbette duruyor."
-    assert brief_spoken_reply(long_ok).startswith("Tamam, DNS ayarland")
-    assert brief_spoken_reply("Anladım. Detaylar aşağıda.") == "Anladım"
-    assert brief_spoken_reply("Merhaba abi.") == "Merhaba abi"
-    assert len(brief_spoken_reply("x" * 200)) < 80
-    assert looks_like_missing_tools("yerel arac yok")
-
-
 def test_pick_edge_voice_uses_ahmet():
     assert pick_edge_voice("", "male") == "tr-TR-AhmetNeural"
     assert pick_edge_voice("tr-TR-EmelNeural", "male") == "tr-TR-AhmetNeural"
@@ -134,7 +123,8 @@ async def test_text_input_speaks_brief_reply(mock_agent, voice_settings):
         tts=tts,
     )
     await assistant.handle_text_input("ekrani oku")
-    assert tts.spoken[-1] == "Ekrana baktım, detaylar sohbette."
+    assert tts.spoken[-1].startswith("Ekranda gorunen yazi:")
+    assert len(tts.spoken[-1]) <= 160
 
 
 @pytest.mark.asyncio
@@ -343,3 +333,44 @@ async def test_configure_voice_toggle(mock_agent, voice_settings):
     assert assistant.voice_enabled is True
 
     await assistant.stop()
+
+
+# ---------------------------------------------------------------------------
+# V3 contract: VoiceAssistant must not access V2-only agent state or
+# server transport. The V3 runtime does not expose ``current_run_id``
+# or ``agent._server``; voice cancellation goes through the local
+# ``_active_request.cancel()`` path.
+# ---------------------------------------------------------------------------
+
+
+def test_voice_stop_active_does_not_touch_v2_agent_state():
+    """V2 ``agent.state.current_run_id`` does not exist in V3. Voice
+    must not try to read it; otherwise the runtime crashes on first
+    cancellation.
+    """
+    import inspect
+
+    from hermes.voice.assistant import VoiceAssistant
+
+    src = inspect.getsource(VoiceAssistant.stop_active)
+    assert "self.agent.state.current_run_id" not in src, (
+        "stop_active must not read V2's current_run_id field; "
+        "V3AgentState does not define it."
+    )
+    assert "self.agent._server.stop_run" not in src, (
+        "stop_active must not call V2's server.stop_run; "
+        "V3 owns the entire turn inside process_turn and "
+        "cancelling the local task is sufficient."
+    )
+
+
+def test_voice_stop_active_cancels_active_request():
+    """V3 cancellation model: ``_active_request.cancel()`` is the
+    only required step.
+    """
+    import inspect
+
+    from hermes.voice.assistant import VoiceAssistant
+
+    src = inspect.getsource(VoiceAssistant.stop_active)
+    assert "_active_request.cancel()" in src

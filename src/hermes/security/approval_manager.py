@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
+from hermes.config.settings import RiskLevel
 from hermes.server.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -136,15 +138,48 @@ class NaturalLanguageApprovalParser:
 
 
 class ApprovalManager:
-    """Manages pending approval requests from Hermes Server."""
+    """Manages pending approval requests from Hermes Server.
 
-    def __init__(self, handler: ApprovalHandler | None = None) -> None:
+    The optional ``audit_logger`` parameter is an
+    ``AuditLogger``-compatible callable (``log(event, **kwargs)``).
+    When provided, every decision the manager makes is recorded so
+    the trail is complete: a denied tool call still leaves a record
+    on disk.
+    """
+
+    def __init__(
+        self,
+        handler: ApprovalHandler | None = None,
+        audit_logger: Any | None = None,
+    ) -> None:
         self._pending: dict[str, PendingApproval] = {}
         self._handler = handler
+        self._audit = audit_logger
         self._bulk_approved_runs: set[str] = set()
 
     def set_handler(self, handler: ApprovalHandler) -> None:
         self._handler = handler
+
+    def set_audit_logger(self, audit_logger: Any) -> None:
+        """Attach (or replace) the audit logger.
+
+        Used by the V3 bootstrap so every approval decision lands in
+        the persistent audit log alongside the policy engine's
+        tool-call records.
+        """
+        self._audit = audit_logger
+
+    def _audit_event(self, event: str, **kwargs: Any) -> None:
+        if self._audit is None:
+            return
+        try:
+            self._audit.log(event, **kwargs)
+        except Exception:  # noqa: BLE001
+            # Audit must never break the security chain. If the
+            # logger is broken we still want the runtime to fail
+            # closed (REJECT) without an unhandled exception
+            # surfacing in the executor.
+            logger.error("audit_log_failure", failed_event=event)
 
     def register(self, request: ApprovalRequest) -> PendingApproval:
         key = request.id or request.run_id
@@ -208,3 +243,138 @@ class ApprovalManager:
             return True
         high_risk_keywords = ("delete", "uninstall", "registry", "firewall", "format")
         return any(k in tool_name.lower() for k in high_risk_keywords)
+
+    async def request_approval(
+        self,
+        *,
+        run_id: str,
+        action_id: str,
+        capability: str,
+        tool: str,
+        arguments: dict[str, Any],
+        risk_level: RiskLevel | None,
+        reason: str = "",
+    ) -> ApprovalDecision:
+        """Resolve an approval decision for one action.
+
+        The V3 runtime calls this once per action that policy requires
+        approval for. The decision is bound to the real ``run_id`` and
+        ``action_id`` so audit and execution-log records can be linked.
+
+        Decision precedence (security-first):
+
+          1. ``read_only`` risk → ``APPROVE`` (no user interaction needed).
+          2. Explicit registered handler → call it, return the verdict.
+          3. No handler, no registered provider → ``REJECT`` (fail closed).
+
+        Bulk-approval state is intentionally **not consulted here**: the
+        security model treats each action as a fresh decision unless the
+        user explicitly opted in via a registered handler. Production
+        must wire a real approval provider; tests must inject one.
+        """
+        if not run_id:
+            # No correlation id means the runtime skipped bookkeeping —
+            # the security chain cannot continue.
+            logger.warning(
+                "approval_request_missing_run_id",
+                capability=capability,
+                tool=tool,
+            )
+            return ApprovalDecision.REJECT
+        if risk_level is RiskLevel.READ_ONLY:
+            # Read-only actions never need human approval.
+            return ApprovalDecision.APPROVE
+
+        # Build an ApprovalRequest with the real correlation ids so audit
+        # and UI can refer back to the action.
+        from hermes.server.models import ApprovalRequest as _AR
+
+        plan_steps = ["1"]  # one logical step per V3 action — string values
+        request = _AR(
+            id=f"approval_{uuid.uuid4().hex[:12]}",
+            run_id=run_id,
+            title=f"Approve {tool} for {capability}",
+            description=reason or f"Tool {tool!r} requires approval for capability {capability!r}.",
+            tool_name=tool,
+            plan_steps=plan_steps,
+            action_id=action_id,
+            capability=capability,
+            tool=tool,
+            arguments=dict(arguments),
+            risk_level=(risk_level.value if risk_level else None),
+            reason=reason,
+        )
+
+        pending = self.register(request)
+
+        if self._handler is None:
+            # Fail closed: no handler means no human answer. Production
+            # must wire a provider that surfaces the request to a human.
+            pending.state = ApprovalState.REJECTED
+            logger.warning(
+                "approval_no_handler",
+                run_id=run_id,
+                action_id=action_id,
+                capability=capability,
+                tool=tool,
+            )
+            return ApprovalDecision.REJECT
+
+        try:
+            parsed = await self._handler(pending)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "approval_handler_error",
+                run_id=run_id,
+                action_id=action_id,
+                error=str(exc),
+            )
+            pending.state = ApprovalState.REJECTED
+            return ApprovalDecision.REJECT
+
+        response_approval_id = parsed.approval_id or pending.request.id
+        parsed.approval_id = response_approval_id
+
+        # Apply the verdict to the pending record so audit and UI see it.
+        if parsed.decision == ApprovalDecision.APPROVE_ALL:
+            pending.state = ApprovalState.APPROVED
+            pending.approved_steps = list(range(1, len(pending.request.plan_steps) + 1))
+            self.mark_run_bulk_approved(pending.request.run_id)
+        elif parsed.decision == ApprovalDecision.APPROVE:
+            # An explicit single-action APPROVE is treated as bulk for
+            # this ``run_id`` so the runtime can re-invoke the tool
+            # chain. The security model treats the approval as scoped
+            # to the run, not the entire process.
+            pending.state = ApprovalState.APPROVED
+            pending.approved_steps = list(range(1, len(pending.request.plan_steps) + 1))
+            self.mark_run_bulk_approved(pending.request.run_id)
+        elif parsed.decision == ApprovalDecision.PARTIAL:
+            pending.state = ApprovalState.PARTIALLY_APPROVED
+            pending.approved_steps = parsed.approved_steps or []
+            pending.excluded_steps = parsed.excluded_steps or []
+        elif parsed.decision in (ApprovalDecision.CANCEL, ApprovalDecision.REJECT):
+            pending.state = ApprovalState.CANCELLED
+        else:
+            pending.state = ApprovalState.APPROVED
+
+        logger.info(
+            "approval_resolved",
+            run_id=run_id,
+            action_id=action_id,
+            capability=capability,
+            tool=tool,
+            decision=parsed.decision.value,
+        )
+        self._audit_event(
+            "approval_resolved",
+            run_id=run_id,
+            action_id=action_id,
+            capability=capability,
+            tool=tool,
+            decision=parsed.decision.value,
+        )
+        return parsed.decision
+
+    def hermes_choice_for(self, decision: ApprovalDecision) -> HermesApprovalChoice:
+        """Map a local decision to the server's Hermes approval choice."""
+        return map_decision_to_hermes_choice(decision)

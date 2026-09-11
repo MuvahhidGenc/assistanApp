@@ -4,7 +4,7 @@ from typing import Any
 
 from rich.console import Console
 
-from hermes.agent.orchestrator import AgentPhase
+from hermes.runtime.orchestrator import AgentPhase
 
 
 class CliChatSession:

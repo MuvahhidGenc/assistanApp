@@ -84,6 +84,68 @@ def is_user_facing_summary(text: str) -> bool:
     return _INTERNAL_SUMMARY_PATTERN.search(cleaned) is None
 
 
+def _try_active_target_report(message: str, ctx: ConversationalContext) -> ConversationTurn:
+    """Answer 'how does that look / look at it' from conversation state.
+
+    Avoids OCR/screen.observe when the deictic target is the previous action
+    (app/file), not a spatial/ordinal screen pick. Uses existing reference
+    features + conversational context — not a new command keyword table.
+    """
+    from hermes.screen.reference import (
+        extract_reference_features,
+        looks_like_screen_reference,
+    )
+
+    features = extract_reference_features(message)
+    # Explicit on-screen deixis still needs perception.
+    if looks_like_screen_reference(message):
+        return ConversationTurn()
+    if features.spatial is not None or features.ordinal is not None:
+        return ConversationTurn()
+    if not (features.deictic or features.session_ref):
+        return ConversationTurn()
+    lower = message.casefold()
+    ask_about = any(
+        token in lower
+        for token in (
+            "bakar",
+            "bak ",
+            " bak",
+            "nasıl",
+            "nasil",
+            "görün",
+            "gorun",
+            "ne durumda",
+            "anlat",
+        )
+    )
+    if not ask_about:
+        return ConversationTurn()
+
+    app = getattr(ctx, "last_application", None) or getattr(ctx, "active_application", None)
+    file_path = getattr(ctx, "active_file", None) or getattr(ctx, "last_opened_file", None)
+    summary = ctx.natural_action_summary()
+    if summary and not is_user_facing_summary(summary):
+        summary = ""
+    if not app and not file_path and not summary:
+        return ConversationTurn()
+
+    parts: list[str] = []
+    if app:
+        parts.append(f"Az önce {app} açıldı; o hâlâ aktif hedef.")
+    if file_path:
+        parts.append(f"İlgili dosya: {Path(str(file_path)).name}.")
+    if summary:
+        parts.append(summary)
+    if not parts:
+        return ConversationTurn()
+    return ConversationTurn(
+        handled=True,
+        response=" ".join(parts),
+        source="active_target_report",
+    )
+
+
 def handle_meta_conversation(
     message: str,
     ctx: ConversationalContext,
@@ -92,6 +154,10 @@ def handle_meta_conversation(
     text = (message or "").strip()
     if not text:
         return ConversationTurn()
+
+    active_report = _try_active_target_report(text, ctx)
+    if active_report.handled:
+        return active_report
 
     if _WHAT_DID.match(text):
         summary = ctx.natural_action_summary()

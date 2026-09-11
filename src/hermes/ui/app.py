@@ -77,9 +77,7 @@ class HermesTrayApplication:
                 elif role != "user":
                     self._chat.append_message(role, text)
             elif event == "status":
-                message = str(payload.get("message") or "").strip()
-                if message:
-                    self._chat.append_message("status", message)
+                # Status updates HUD only — never the conversation transcript.
                 self._chat.refresh_state()
             elif event == "approval_required":
                 self._chat.show()

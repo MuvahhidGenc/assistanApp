@@ -277,3 +277,43 @@ def sanitize_assistant_text(text: str) -> str:
     if not looks_like_missing_tools(text):
         return text
     return ""
+
+
+_INTERNAL_CHAT_MARKERS = (
+    "mission tamamland",
+    "mission tamamlanamad",
+    "mission kismen",
+    "yetenegini kullaniyorum",
+    "yeteneğini kullanıyorum",
+    "screen.observe",
+    "browser.navigate",
+    "recovery başar",
+    "recovery basar",
+    "verification:",
+    "tool call:",
+    "working_context",
+    "rpc:",
+    "gorev tamamlandi:",
+)
+
+
+def is_internal_chat_text(text: str) -> bool:
+    blob = (text or "").casefold()
+    if not blob.strip():
+        return False
+    return any(marker in blob for marker in _INTERNAL_CHAT_MARKERS)
+
+
+def sanitize_chat_reply(text: str, *, fallback: str = "Tamam, yaptım.") -> str:
+    """User-facing chat must never show mission/tool telemetry."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return fallback
+    if not is_internal_chat_text(cleaned):
+        return cleaned
+    # Prefer the last non-internal line if a mixed blob slipped through.
+    for line in reversed(cleaned.splitlines()):
+        piece = line.strip().lstrip("-• ").strip()
+        if piece and not is_internal_chat_text(piece) and "yetenegini" not in piece.casefold():
+            return piece
+    return fallback
