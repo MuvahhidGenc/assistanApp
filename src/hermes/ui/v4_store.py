@@ -4,6 +4,7 @@ Not agent / executor / memory / policy / log.
 Only holds projected UI state from V3 canonical events.
 """
 from __future__ import annotations
+import datetime as _dt
 from typing import Callable, Any
 from hermes.ui.v4_projection import UIEvent
 
@@ -17,6 +18,44 @@ class V4UIStore:
         self.verification_state = "pending"
         self.recovery_state = "none"
         self.error_state = None
+        # Source-of-truth for chat conversation history
+        # (preserved across HOME/CHAT page remounts). Only worker-emit
+        # events append here; UI pages must NOT mutate directly.
+        self.chat_messages: list[dict[str, Any]] = []
+
+    def append_chat_message(
+        self,
+        role: str,
+        text: str,
+        *,
+        source: str | None = None,
+        timestamp: str | None = None,
+    ) -> dict[str, Any]:
+        """Append a chat message from the canonical worker emit path.
+
+        UI pages must treat ``chat_messages`` as read-only and only
+        iterate it to redraw bubbles on mount. Subscribers receive a
+        ``chat_message_added`` signal with the newly appended entry so
+        mounted pages can draw the bubble in-flight without a full
+        rebuild.
+        """
+        entry = {
+            "role": str(role or "system").strip(),
+            "text": str(text or "").strip(),
+            "source": (str(source) if source else None),
+            "timestamp": (
+                str(timestamp)
+                if timestamp
+                else _dt.datetime.now().strftime("%H:%M")
+            ),
+        }
+        self.chat_messages.append(entry)
+        for cb in list(self._subs):
+            try:
+                cb("chat_message_added", entry)
+            except Exception:
+                pass
+        return entry
 
     def apply(self, event: UIEvent) -> bool:
         if event.event_id in self._seen_ids:
