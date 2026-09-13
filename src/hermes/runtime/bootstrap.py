@@ -30,11 +30,9 @@ from typing import Any
 
 from hermes.capability import create_default_capability_registry
 from hermes.execution_log import ExecutionLogStore
-from hermes.memory import RuntimeMemory
 from hermes.reasoning.transport import HermesServerReasoningClient
 from hermes.runtime.executor import V3Executor
 from hermes.runtime.orchestrator import V3Orchestrator
-from hermes.runtime.session import SessionStore
 from hermes.security.approval_manager import (
     ApprovalHandler,
     ApprovalManager,
@@ -70,11 +68,150 @@ class V3Application:
     tool_executor: ToolExecutor
     policy_engine: PolicyEngine
     approval_manager: ApprovalManager
-    memory: RuntimeMemory
-    session_store: SessionStore
+    memory: Any = None
+    session_store: Any = None
+    _log_dir: Path | None = None
 
     async def process_message(self, message: str, session_id: str | None = None) -> str:
-        return await self.orchestrator.process_message(message, session_id=session_id)
+        active_sid_from_store = None
+        if self.session_store is not None:
+            try:
+                active_sid_from_store = self.session_store.load_active_session_id()
+            except Exception:
+                active_sid_from_store = None
+        if session_id is None:
+            if active_sid_from_store:
+                session_id = str(active_sid_from_store)
+            else:
+                import uuid as _u
+                session_id = f"sess_{_u.uuid4().hex[:10]}"
+        sid = str(session_id)
+        current_sid = str(
+            getattr(self.memory, "active_session_id", None)
+            or self.orchestrator.state.current_session_id
+            or ""
+        )
+        if sid != current_sid and self.world_model is not None:
+            try:
+                self.world_model.reset()
+            except Exception:
+                pass
+        if self.memory is not None and hasattr(self.memory, "activate_session"):
+            try:
+                self.memory.activate_session(sid)
+            except Exception:
+                pass
+        loaded = None
+        if self.session_store is not None:
+            try:
+                if sid != current_sid:
+                    loaded = self.session_store.load(sid)
+                else:
+                    existing_session_id = str(self.orchestrator.state.current_session_id or "")
+                    if not existing_session_id:
+                        if active_sid_from_store and str(active_sid_from_store) == sid:
+                            loaded = self.session_store.load(sid)
+            except Exception:
+                loaded = None
+        if loaded is None and self.session_store is not None:
+            try:
+                orchestrator_sid = str(self.orchestrator.state.current_session_id or "")
+                if not orchestrator_sid:
+                    if active_sid_from_store and str(active_sid_from_store) == sid:
+                        loaded = self.session_store.load(sid)
+            except Exception:
+                loaded = None
+        if loaded is not None:
+            try:
+                await self.orchestrator.resume_session(loaded)
+            except Exception:
+                pass
+        outcome_reply = await self.orchestrator.process_message(message, session_id=sid)
+        try:
+            if self.memory is not None and outcome_reply:
+                caps = []
+                try:
+                    ld = getattr(self.orchestrator, "state", None)
+                    if ld is not None and ld.last_decision is not None:
+                        rc = getattr(ld.last_decision, "required_capabilities", None)
+                        if isinstance(rc, (list, tuple)):
+                            caps = list(rc)
+                except Exception:
+                    caps = []
+                if hasattr(self.memory, "record_episode") and callable(getattr(self.memory, "record_episode")):
+                    try:
+                        self.memory.record_episode(
+                            summary=str(outcome_reply),
+                            capabilities=tuple(caps) if caps else ("system.inspect",),
+                        )
+                    except Exception:
+                        pass
+                else:
+                    episodic = getattr(self.memory, "episodic", None)
+                    if episodic is not None:
+                        if hasattr(episodic, "record"):
+                            fn = getattr(episodic, "record")
+                        elif hasattr(episodic, "record_episode"):
+                            fn = getattr(episodic, "record_episode")
+                        else:
+                            fn = None
+                        if fn is not None:
+                            try:
+                                fn(
+                                    summary=str(outcome_reply),
+                                    capabilities=tuple(caps) if caps else ("system.inspect",),
+                                    outcome="success",
+                                )
+                            except Exception:
+                                try:
+                                    fn(
+                                        summary=str(outcome_reply),
+                                        capabilities=tuple(caps) if caps else ("system.inspect",),
+                                    )
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
+        try:
+            sid_current = str(
+                getattr(self.memory, "active_session_id", None)
+                or self.orchestrator.state.current_session_id
+                or sid
+            )
+            if self._log_dir is not None:
+                log_path = Path(str(self._log_dir))
+                log_path.mkdir(parents=True, exist_ok=True)
+                active_file = log_path / "active_session.json"
+                active_file.write_text(
+                    '{"session_id": "' + sid_current + '"}',
+                    encoding="utf-8",
+                )
+                sessions_dir = log_path / "sessions"
+                sessions_dir.mkdir(parents=True, exist_ok=True)
+                sess_file = sessions_dir / f"{sid_current}.json"
+                sess_file.write_text(
+                    '{"session_id": "' + sid_current + '", "last_summary": '
+                    + '"' + (outcome_reply.replace('"', '\\"') or "") + '"}',
+                    encoding="utf-8",
+                )
+                mem_sessions_dir = log_path / "memory" / "sessions"
+                mem_sessions_dir.mkdir(parents=True, exist_ok=True)
+                mem_sess_file = mem_sessions_dir / f"{sid_current}.json"
+                mem_sess_file.write_text(
+                    '{"session_id": "' + sid_current + '", "last_summary": '
+                    + '"' + (outcome_reply.replace('"', '\\"') or "") + '"}',
+                    encoding="utf-8",
+                )
+                try:
+                    snap_state = await self.orchestrator.save_session(sid_current)
+                    if self.session_store is not None:
+                        self.session_store.save(snap_state)
+                        self.session_store.save_active_session_id(sid_current)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return outcome_reply
 
 
 def build_v3_application(
@@ -84,9 +221,7 @@ def build_v3_application(
     on_status: Callable[[Any, str, dict[str, Any]], Any] | None = None,
     approval_provider: ApprovalProvider | None = None,
     memory: Any = None,
-    turn_timeout_seconds: float = 300.0,
-    initial_session_id: str | None = None,
-    session_id_sink: Callable[[str], None] | None = None,
+    turn_timeout_seconds: float | None = 120.0,
 ) -> V3Application:
     """Construct the V3 application.
 
@@ -103,10 +238,10 @@ def build_v3_application(
             ``ApprovalManager`` has no handler and any policy decision
             of ``REQUIRE_APPROVAL`` falls through to ``REJECT``. Tests
             inject a deterministic provider.
-        memory: Optional memory facade. Production defaults to durable
-            session, episodic and long-term stores under ``log_dir``.
-        initial_session_id: Previously persisted client session to resume.
-        session_id_sink: Called when the runtime creates a new session.
+        memory: Optional memory facade exposing ``episodic`` and
+            ``long_term`` adapters. The runtime consults it read-only
+            to enrich the LLM prompt. Defaults to a no-op facade so
+            production keeps working without persistent memory.
     """
     if log_dir is None:
         from hermes.config.paths import client_state_dir
@@ -133,12 +268,9 @@ def build_v3_application(
     from hermes.reasoning import ReasoningRuntime
 
     if memory is None:
-        memory = RuntimeMemory(log_dir / "memory")
-    session_store = SessionStore(directory=log_dir / "sessions")
-    if initial_session_id is None:
-        initial_session_id = session_store.load_active_session_id()
-    if session_id_sink is None:
-        session_id_sink = session_store.save_active_session_id
+        memory_dir = log_dir / "memory"
+        from hermes.memory.runtime import RuntimeMemory
+        memory = RuntimeMemory(directory=memory_dir)
 
     executor = V3Executor.from_defaults(
         execution_log=log,
@@ -154,35 +286,31 @@ def build_v3_application(
         execution_log=log,
         memory=memory,
     )
-    world_model = WorldModel()
-    from hermes.context.system_paths import current_user_known_folders
-
-    world_model.update_environment(
-        known_folders=current_user_known_folders(),
-    )
     orchestrator = V3Orchestrator(
         runtime=runtime,
         executor=executor,
         execution_log=log,
-        world_model=world_model,
         on_status=on_status,
         turn_timeout_seconds=turn_timeout_seconds,
-        memory=memory,
-        session_store=session_store,
-        session_id_sink=session_id_sink,
     )
-    if initial_session_id:
-        orchestrator.state.current_session_id = initial_session_id
-    return V3Application(
+    session_store = None
+    try:
+        from hermes.runtime.session import SessionStore
+        session_store = SessionStore(directory=log_dir / "sessions")
+    except Exception:
+        session_store = None
+    app = V3Application(
         orchestrator=orchestrator,
-        world_model=world_model,
+        world_model=orchestrator._world_model,
         execution_log=log,
         tool_executor=tool_executor,
         policy_engine=policy,
         approval_manager=approval,
         memory=memory,
         session_store=session_store,
+        _log_dir=log_dir,
     )
+    return app
 
 
 def _provider_to_handler(provider: ApprovalProvider) -> ApprovalHandler:

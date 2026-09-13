@@ -262,6 +262,14 @@ class WorldModel:
                 relevant_context=self._task.relevant_context,
             )
 
+    def requirement_satisfied(self, capability: str) -> bool:
+        """Return True iff every requirement bound to ``capability`` is satisfied."""
+        with self._lock:
+            caps = [req for req in self._task.requirements if req.capability == capability]
+            if not caps:
+                return False
+            return all(req.satisfied for req in caps)
+
     def ensure_requirements(self, capabilities: tuple[str, ...]) -> None:
         """Add newly declared task requirements without losing progress."""
         with self._lock:
@@ -372,13 +380,48 @@ class WorldModel:
     def snapshot(self) -> dict[str, Any]:
         """Return a structured snapshot for the reasoning layer."""
         with self._lock:
-            return {
-                "environment": self._environment.to_dict(),
+            env = self._environment.to_dict() if self._environment is not None else {}
+            if not isinstance(env, dict):
+                env = {}
+            env_extra = env.get("extra") if isinstance(env.get("extra"), dict) else {}
+            if not isinstance(env_extra, dict):
+                env_extra = {}
+            try:
+                from hermes.context.system_paths import current_user_known_folders as _ckf
+                folders = _ckf() if callable(_ckf) else {}
+                if isinstance(folders, dict) and folders:
+                    env_extra.setdefault("known_folders", dict(folders))
+            except Exception:
+                pass
+            if env_extra:
+                env = dict(env)
+                env["extra"] = env_extra
+            ref_values = {
+                key: binding.to_dict()
+                for key, binding in self._references.items()
+            }
+            verified = {
+                k: v for k, v in ref_values.items()
+                if getattr(v, "get", lambda *_: False)
+                and v.get("verified") is True
+            } if isinstance(ref_values, dict) else {}
+            last_folder = ""
+            if isinstance(env, dict):
+                last_folder = (
+                    env.get("cwd")
+                    or env.get("current_path")
+                    or env.get("active_folder")
+                    or env.get("last_path")
+                    or ""
+                )
+            snap = {
+                "environment": env if env is not None else {},
                 "task": self._task.to_dict(),
                 "evidence": [e.to_dict() for e in self._evidence],
-                "references": {
-                    key: binding.to_dict()
-                    for key, binding in self._references.items()
-                },
+                "references": ref_values,
+                "verified_references": verified,
+                "last_folder": last_folder,
+                "extra": {},
                 "as_of": _utc_now_iso(),
             }
+            return snap

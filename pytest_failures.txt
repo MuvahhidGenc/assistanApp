@@ -1,0 +1,43 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\OMER\Desktop\calismalarim\assistanApp\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\OMER\Desktop\calismalarim\assistanApp
+configfile: pyproject.toml
+plugins: anyio-4.14.2, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 3 items
+
+tests/test_checklist_v3.py::test_16_17_18_policy_approval_audit_wired FAILED [ 33%]
+tests/test_orchestrator_timeout_v3.py::test_turn_timeout_none_keeps_backwards_compatible_behaviour FAILED [ 66%]
+tests/test_memory_v35.py::test_production_runtime_uses_real_memory_not_noop FAILED [100%]
+
+================================== FAILURES ===================================
+__________________ test_16_17_18_policy_approval_audit_wired __________________
+tests\test_checklist_v3.py:168: in test_16_17_18_policy_approval_audit_wired
+    assert "tool_call_received" in (tmp_path / "audit.log").read_text()
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\pathlib\_local.py:546: in read_text
+    return PathBase.read_text(self, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\pathlib\_abc.py:632: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\pathlib\_local.py:537: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\OMER\\AppData\\Local\\Temp\\pytest-of-OMER\\pytest-154\\test_16_17_18_policy_approval_0\\audit.log'
+_________ test_turn_timeout_none_keeps_backwards_compatible_behaviour _________
+tests\test_orchestrator_timeout_v3.py:95: in test_turn_timeout_none_keeps_backwards_compatible_behaviour
+    assert outcome.completed is True
+E   assert False is True
+E    +  where False = TurnOutcome(reply="Reasoning failed: ReasoningPrompt.__init__() got an unexpected keyword argument 'correlation_id'", decision=None, iterations=1, completed=False).completed
+______________ test_production_runtime_uses_real_memory_not_noop ______________
+tests\test_memory_v35.py:390: in test_production_runtime_uses_real_memory_not_noop
+    assert isinstance(app.memory, RuntimeMemory)
+                      ^^^^^^^^^^
+E   AttributeError: 'V3Application' object has no attribute 'memory'
+=========================== short test summary info ===========================
+FAILED tests/test_checklist_v3.py::test_16_17_18_policy_approval_audit_wired
+FAILED tests/test_orchestrator_timeout_v3.py::test_turn_timeout_none_keeps_backwards_compatible_behaviour
+FAILED tests/test_memory_v35.py::test_production_runtime_uses_real_memory_not_noop
+============================== 3 failed in 0.63s ==============================

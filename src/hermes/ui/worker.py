@@ -24,6 +24,7 @@ class WorkerCommand(StrEnum):
     REFRESH_CONNECTION = "refresh_connection"
     RELOAD_CONFIG = "reload_config"
     RESOLVE_APPROVAL = "resolve_approval"
+    PRESS_TO_TALK = "press_to_talk"
     SHUTDOWN = "shutdown"
 
 
@@ -107,6 +108,21 @@ class BackgroundWorker:
     def resolve_approval(self, decision: str) -> None:
         """Resolve pending approval immediately (must not go through command queue)."""
         self._apply_approval_decision(decision, source="ui")
+
+    def press_to_talk(self, wake_word: str = "muvahhid", initial_command: str = "") -> None:
+        """Enter press-to-talk mode via the canonical VoiceAssistant path.
+
+        Delegates to ``VoiceAssistant.press_to_talk`` on the worker thread
+        through the command queue so asyncio event loop ownership is
+        preserved.
+        """
+        self._enqueue(
+            WorkerCommand.PRESS_TO_TALK,
+            {
+                "wake_word": str(wake_word or "muvahhid"),
+                "initial_command": str(initial_command or ""),
+            },
+        )
 
     def _approval_is_pending(self) -> bool:
         return self._approval_future is not None and not self._approval_future.done()
@@ -278,7 +294,7 @@ class BackgroundWorker:
         secret = get_or_create_rpc_secret()
         try:
             self._rpc_server = LocalToolRpcServer(
-                self._app.agent.tool_executor,
+                self._app.agent.local_context,
                 self._loop,
                 host=host,
                 port=port,
@@ -517,6 +533,19 @@ class BackgroundWorker:
                 await self._voice.configure_voice(wake_word_enabled=False)
             self.state.set_voice(wake_word_enabled=self._voice.wake_word_enabled)
             self._emit("state")
+            return
+
+        if payload.kind == WorkerCommand.PRESS_TO_TALK:
+            if self._voice is not None and hasattr(self._voice, "press_to_talk") and callable(self._voice.press_to_talk):
+                try:
+                    ww = str(payload.data.get("wake_word", "muvahhid") or "muvahhid")
+                    cmd = str(payload.data.get("initial_command", "") or "")
+                    await self._voice.press_to_talk(wake_word=ww, initial_command=cmd)
+                except Exception as exc:
+                    logger.exception("press_to_talk_failed")
+                    self._emit("error", {"message": str(exc)})
+            else:
+                self._emit("error", {"message": "Ses servisi hazir degil."})
             return
 
         if payload.kind == WorkerCommand.REFRESH_CONNECTION:

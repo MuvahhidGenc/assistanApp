@@ -15,6 +15,7 @@ from hermes.config.paths import (
     user_config_path,
 )
 from hermes.config.settings import AppSettings, normalize_model
+from hermes.config_client import write_yaml
 
 
 def normalize_env(value: str | None) -> str:
@@ -124,8 +125,7 @@ def save_settings_form(data: SettingsFormData) -> Path:
     payload["voice"]["wake_word_enabled"] = data.wake_word_enabled
     payload.setdefault("ui", {})
     payload["ui"]["notifications_enabled"] = data.notifications_enabled
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+    write_yaml(path, payload)
     set_api_key(data.api_key.strip())
     return path
 
@@ -148,6 +148,4 @@ def upsert_user_config_server(url: str, model: str) -> Path:
     payload.setdefault("server", {})
     payload["server"]["url"] = url.strip()
     payload["server"]["model"] = normalize_model(model)
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
-    return path
+    return write_yaml(path, payload)

@@ -307,7 +307,11 @@ class ApprovalManager:
 
         pending = self.register(request)
 
-        if self._handler is None:
+        # Precedence: explicit preferred/legacy bridge handler → registered
+        # provider handler → fail closed (no user = reject).
+        effective_handler = getattr(self, "_preferred_handler", None) or self._handler
+
+        if effective_handler is None:
             # Fail closed: no handler means no human answer. Production
             # must wire a provider that surfaces the request to a human.
             pending.state = ApprovalState.REJECTED
@@ -321,7 +325,29 @@ class ApprovalManager:
             return ApprovalDecision.REJECT
 
         try:
-            parsed = await self._handler(pending)
+            raw = await effective_handler(pending)
+            # Normalize handler return value (can be ParsedApproval /
+            # ApprovalDecision enum / natural-language string from the
+            # legacy UI bridge String return values MUST be parsed by
+            # NaturalLanguageApprovalParser so "evet" → APPROVE_ALL etc.
+            # is correctly mapped to canonical decisions including bulk.
+            from hermes.server.models import ApprovalDecision as _AD
+
+            if isinstance(raw, ParsedApproval):
+                parsed = raw
+            elif isinstance(raw, _AD):
+                parsed = ParsedApproval(decision=raw, message=str(raw.value))
+            elif isinstance(raw, str):
+                parser = NaturalLanguageApprovalParser()
+                parsed = parser.parse(
+                    text=raw,
+                    total_steps=len(pending.request.plan_steps or []),
+                )
+                # Guarantee non-None decision for the empty-string edge case.
+                if parsed.decision is None:
+                    parsed = ParsedApproval(decision=_AD.CANCEL, message=raw or "")
+            else:
+                parsed = ParsedApproval(decision=_AD.CANCEL, message=str(raw or ""))
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "approval_handler_error",

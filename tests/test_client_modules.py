@@ -23,7 +23,7 @@ def test_apply_server_defaults_keeps_existing_url():
 
 
 def test_voice_listener_wake_words():
-    assert WAKE_WORDS == ("abi", "akhi", "dostum")
+    assert WAKE_WORDS == ("abi", "akhi", "dostum", "muvahhid")
     listener = object.__new__(VoiceListener)
     listener.wake_words = WAKE_WORDS
     wake, rest = listener.parse_wake("abi chrome ac")

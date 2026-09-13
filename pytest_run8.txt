@@ -1,0 +1,323 @@
+﻿FF.FF...............F.FFF........F.FF.FFFFFFFF....F                      [100%]
+================================== FAILURES ===================================
+____________ test_production_session_persists_and_restores_context ____________
+tests\test_memory_v35.py:62: in test_production_session_persists_and_restores_context
+    first_reply = await first_app.process_message("Klas÷r³ olu■tur.")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\bootstrap.py:75: in process_message
+    outcome = await self.orchestrator.process_turn(message)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+______________ test_sessions_are_isolated_in_production_runtime _______________
+tests\test_memory_v35.py:132: in test_sessions_are_isolated_in_production_runtime
+    await app.process_message("A g÷revi.", session_id="session_A")
+src\hermes\runtime\bootstrap.py:75: in process_message
+    outcome = await self.orchestrator.process_turn(message)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+____________ test_explicit_long_term_fact_from_reasoning_persists _____________
+tests\test_memory_v35.py:200: in test_explicit_long_term_fact_from_reasoning_persists
+    assert fact is not None
+E   assert None is not None
+________ test_sensitive_reasoning_memory_fact_is_rejected_fail_closed _________
+tests\test_memory_v35.py:241: in test_sensitive_reasoning_memory_fact_is_rejected_fail_closed
+    assert "kaydedemem" in outcome
+E   AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+______________ test_acceptance_4_no_local_regex_semantic_routing ______________
+tests\test_final_acceptance_v3.py:131: in test_acceptance_4_no_local_regex_semantic_routing
+    assert not re.search(forbidden, non_docstring), (
+E   AssertionError: hermes.runtime.orchestrator contains forbidden regex routing pattern: 'if .*[\'\\"]browser[\'\\"].* in'
+E   assert not <re.Match object; span=(18898, 18954), match='if cap.endswith(".open") or "url" in cap or "brow>
+E    +  where <re.Match object; span=(18898, 18954), match='if cap.endswith(".open") or "url" in cap or "brow> = <function search at 0x000001D5A4FBCC20>('if .*[\'\\"]browser[\'\\"].* in', '\n\nfrom __future__ import annotations\n\nimport asyncio\nimport uuid\nfrom collections.abc import AsyncIterator, Awa...untime=runtime,\n        executor=executor,\n        execution_log=execution_log,\n        on_status=on_status,\n    )')
+E    +    where <function search at 0x000001D5A4FBCC20> = re.search
+_____________ test_acceptance_7_to_10_runtime_records_every_event _____________
+tests\test_final_acceptance_v3.py:205: in test_acceptance_7_to_10_runtime_records_every_event
+    await orch.process_turn("write a file")
+src\hermes\runtime\orchestrator.py:291: in process_turn
+    outcome = await _drive()
+              ^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+________________ test_acceptance_11_complete_evidence_required ________________
+tests\test_final_acceptance_v3.py:274: in test_acceptance_11_complete_evidence_required
+    outcome = await orch.process_turn("do it")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:291: in process_turn
+    outcome = await _drive()
+              ^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+______________ test_acceptance_12_unexpected_triggers_re_reason _______________
+tests\test_final_acceptance_v3.py:348: in test_acceptance_12_unexpected_triggers_re_reason
+    outcome = await orch.process_turn("recover")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:291: in process_turn
+    outcome = await _drive()
+              ^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+___________________ test_acceptance_26_audit_log_no_secret ____________________
+tests\test_final_acceptance_v3.py:558: in test_acceptance_26_audit_log_no_secret
+    await orch.process_turn("write")
+src\hermes\runtime\orchestrator.py:291: in process_turn
+    outcome = await _drive()
+              ^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+_____________ test_acceptance_28_save_and_resume_keeps_objective ______________
+tests\test_final_acceptance_v3.py:629: in test_acceptance_28_save_and_resume_keeps_objective
+    await orch.process_turn("write")
+src\hermes\runtime\orchestrator.py:291: in process_turn
+    outcome = await _drive()
+              ^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+____________ test_acceptance_29_completion_with_verified_evidence _____________
+tests\test_final_acceptance_v3.py:687: in test_acceptance_29_completion_with_verified_evidence
+    await orch.process_turn("finish it")
+src\hermes\runtime\orchestrator.py:291: in process_turn
+    outcome = await _drive()
+              ^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+__________ test_create_folder_verifies_and_next_turn_uses_reference ___________
+tests\test_orchestrator_v34.py:141: in test_create_folder_verifies_and_next_turn_uses_reference
+    first = await orchestrator.process_turn("Masa³st³nde deneme12 klas÷r³ olu■tur.")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+______ test_production_transport_carries_verified_reference_to_next_turn ______
+tests\test_orchestrator_v34.py:230: in test_production_transport_carries_verified_reference_to_next_turn
+    assert first.completed is True
+E   assert False is True
+E    +  where False = TurnOutcome(reply="Reasoning failed: 'environment'", decision=None, iterations=1, completed=False).completed
+_________ test_success_true_with_unknown_verification_cannot_complete _________
+tests\test_orchestrator_v34.py:317: in test_success_true_with_unknown_verification_cannot_complete
+    outcome = await orchestrator.process_turn("Dosyay² olu■tur.")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+______________ test_verification_failure_is_sent_to_rereasoning _______________
+tests\test_orchestrator_v34.py:349: in test_verification_failure_is_sent_to_rereasoning
+    outcome = await orchestrator.process_turn("Dosyay² olu■tur.")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+__________________ test_wrong_path_observation_then_recovery __________________
+tests\test_orchestrator_v34.py:389: in test_wrong_path_observation_then_recovery
+    outcome = await orchestrator.process_turn("Dosyay² oku.")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+_______________ test_incomplete_multi_step_goal_cannot_complete _______________
+tests\test_orchestrator_v34.py:426: in test_incomplete_multi_step_goal_cannot_complete
+    outcome = await orchestrator.process_turn("Dosyay² bul ve a.")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+____ test_repeated_capability_requirements_need_distinct_verified_actions _____
+tests\test_orchestrator_v34.py:462: in test_repeated_capability_requirements_need_distinct_verified_actions
+    outcome = await orchestrator.process_turn("¦ki dosya olu■tur.")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+___________ test_prior_turn_evidence_cannot_complete_unrelated_turn ___________
+tests\test_orchestrator_v34.py:488: in test_prior_turn_evidence_cannot_complete_unrelated_turn
+    first = await orchestrator.process_turn("¦lk dosyay² olu■tur.")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+_____________ test_world_model_records_distinct_evidence_sources ______________
+tests\test_orchestrator_v34.py:663: in test_world_model_records_distinct_evidence_sources
+    asyncio.run(orchestrator.process_turn("Kan²tl² dosya olu■tur."))
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\runners.py:196: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\base_events.py:725: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+src\hermes\runtime\orchestrator.py:296: in process_turn
+    outcome = await asyncio.wait_for(task, timeout=self._turn_timeout_seconds)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\Lib\asyncio\tasks.py:507: in wait_for
+    return await fut
+           ^^^^^^^^^
+src\hermes\runtime\orchestrator.py:284: in _drive
+    return await self._drive_turn(
+src\hermes\runtime\orchestrator.py:404: in _drive_turn
+    self._absorb_execution(outcome)
+src\hermes\runtime\orchestrator.py:554: in _absorb_execution
+    args = outcome.action.arguments if outcome.action else {}
+                                       ^^^^^^^^^^^^^^
+E   AttributeError: 'ActionExecutionOutcome' object has no attribute 'action'. Did you mean: 'action_id'?
+=========================== short test summary info ===========================
+FAILED tests/test_memory_v35.py::test_production_session_persists_and_restores_context
+FAILED tests/test_memory_v35.py::test_sessions_are_isolated_in_production_runtime
+FAILED tests/test_memory_v35.py::test_explicit_long_term_fact_from_reasoning_persists
+FAILED tests/test_memory_v35.py::test_sensitive_reasoning_memory_fact_is_rejected_fail_closed
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_4_no_local_regex_semantic_routing
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_7_to_10_runtime_records_every_event
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_11_complete_evidence_required
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_12_unexpected_triggers_re_reason
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_26_audit_log_no_secret
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_28_save_and_resume_keeps_objective
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_29_completion_with_verified_evidence
+FAILED tests/test_orchestrator_v34.py::test_create_folder_verifies_and_next_turn_uses_reference
+FAILED tests/test_orchestrator_v34.py::test_production_transport_carries_verified_reference_to_next_turn
+FAILED tests/test_orchestrator_v34.py::test_success_true_with_unknown_verification_cannot_complete
+FAILED tests/test_orchestrator_v34.py::test_verification_failure_is_sent_to_rereasoning
+FAILED tests/test_orchestrator_v34.py::test_wrong_path_observation_then_recovery
+FAILED tests/test_orchestrator_v34.py::test_incomplete_multi_step_goal_cannot_complete
+FAILED tests/test_orchestrator_v34.py::test_repeated_capability_requirements_need_distinct_verified_actions
+FAILED tests/test_orchestrator_v34.py::test_prior_turn_evidence_cannot_complete_unrelated_turn
+FAILED tests/test_orchestrator_v34.py::test_world_model_records_distinct_evidence_sources
+20 failed, 31 passed in 2.62s

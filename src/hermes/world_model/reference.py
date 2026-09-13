@@ -74,6 +74,9 @@ class ReferenceBinding:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        extra = dict(self.extra)
+        verified_val = bool(extra.get("verified", True))
+        extra.setdefault("verified", verified_val)
         return {
             "binding_id": self.binding_id,
             "key": self.key,
@@ -82,7 +85,8 @@ class ReferenceBinding:
             "provenance": self.provenance,
             "as_of": self.as_of,
             "expires_at": self.expires_at,
-            "extra": dict(self.extra),
+            "verified": verified_val,
+            "extra": extra,
         }
 
 

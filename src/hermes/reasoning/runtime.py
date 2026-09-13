@@ -107,12 +107,24 @@ class ReasoningRuntime:
             for cap in windows_capabilities(self.capability_registry)
         )
         memory_view = self._memory_view()
+        extra: dict[str, Any] = {}
+        if isinstance(snapshot.get("extra"), dict):
+            extra.update(snapshot["extra"])
+        env = snapshot.get("environment") if isinstance(snapshot.get("environment"), dict) else None
+        if isinstance(env, dict):
+            env_extra = env.get("extra") if isinstance(env.get("extra"), dict) else None
+            if isinstance(env_extra, dict) and env_extra:
+                for k, v in env_extra.items():
+                    if k not in extra:
+                        extra[k] = v
+        if memory_view:
+            extra["memory"] = memory_view
         prompt = ReasoningPrompt(
             user_message=user_message,
             world_snapshot=snapshot,
             available_capabilities=capabilities,
             recent_events=tuple(events),
-            extra={"memory": memory_view} if memory_view else {},
+            extra=extra,
             correlation_id=correlation_id,
             task_id=_task_id_for(correlation_id),
             client_session_id=self._client_session_id(),
@@ -181,6 +193,13 @@ class ReasoningRuntime:
         )
         memory_view = self._memory_view()
         extra = {"re_reason": reason}
+        env = snapshot.get("environment") if isinstance(snapshot.get("environment"), dict) else None
+        if isinstance(env, dict):
+            env_extra = env.get("extra") if isinstance(env.get("extra"), dict) else None
+            if isinstance(env_extra, dict) and env_extra:
+                for k, v in env_extra.items():
+                    if k not in extra:
+                        extra[k] = v
         if memory_view:
             extra["memory"] = memory_view
         prompt = ReasoningPrompt(

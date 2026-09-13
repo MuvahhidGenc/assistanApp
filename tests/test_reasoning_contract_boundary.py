@@ -175,6 +175,40 @@ def test_empty_required_capabilities_is_valid_when_no_capability_is_claimed():
     )
 
 
+def test_turn_time_validation_tolerates_missing_required_capabilities():
+    """Live server models sometimes omit ``required_capabilities``. Turn-time
+    (runtime) validation runs with ``require_required_capabilities=False`` so
+    a missing array defaults to empty instead of failing the whole turn; the
+    strict external boundary (default) still rejects it.
+    """
+    validate_decision_payload(
+        {
+            "kind": "action",
+            "capability": "filesystem.write",
+            "arguments": {"path": "x", "content": "y"},
+        },
+        available_capabilities=_CAPABILITIES,
+        world_snapshot=_world(),
+        correlation_id="turn_current",
+        check_requirement_transition=False,
+        check_input_schema=False,
+        require_required_capabilities=False,
+    )
+    validate_decision_payload(
+        {
+            "kind": "complete",
+            "summary": "done",
+            "evidence_ids": [],
+        },
+        available_capabilities=_CAPABILITIES,
+        world_snapshot=_world(),
+        correlation_id="turn_current",
+        check_requirement_transition=False,
+        check_input_schema=False,
+        require_required_capabilities=False,
+    )
+
+
 @pytest.mark.parametrize(
     "injected",
     [

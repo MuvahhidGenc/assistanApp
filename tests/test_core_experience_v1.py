@@ -64,6 +64,7 @@ def test_open_url_tool_does_not_force_youtube_sleep():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="V2 AgentOrchestrator removed in V3+; agent/orchestrator.py deleted. Use V3Orchestrator tests.")
 async def test_early_simple_local_sets_fast_path_trace():
     from hermes.agent.orchestrator import AgentOrchestrator
     from hermes.config.settings import AppSettings

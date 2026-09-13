@@ -136,3 +136,88 @@ def test_save_settings_form_raises_on_invalid():
     )
     with pytest.raises(ValueError, match="API URL"):
         save_settings_form(data)
+
+
+def test_write_yaml_skips_identical_content(tmp_path):
+    """Regression: config_client.write_yaml MUST NOT rewrite disk when the
+    existing byte content is identical. This avoids Errno 13 PermissionError
+    on Windows when Explorer / AV / a lingering reader holds a transient
+    share-lock on ``default.yaml`` during production EXE bootstrap."""
+    from hermes.config_client import write_yaml
+
+    target = tmp_path / "cfg" / "default.yaml"
+    payload = {"server": {"url": "http://x", "model": "y"}}
+
+    p1 = write_yaml(target, payload)
+    assert p1 == target
+    first_bytes = target.read_bytes()
+    first_mtime_ns = target.stat().st_mtime_ns
+
+    import time
+    time.sleep(0.02)
+
+    p2 = write_yaml(target, dict(payload))
+    assert p2 == target
+    assert target.read_bytes() == first_bytes
+    # Idempotency invariant: no write took place, so mtime MUST be unchanged.
+    assert target.stat().st_mtime_ns == first_mtime_ns
+    # No stray temp files left next to the target.
+    leftovers = [p.name for p in target.parent.iterdir() if p.name != target.name]
+    assert leftovers == []
+
+
+def test_write_yaml_actually_updates_when_payload_changes(tmp_path):
+    """Ensure idempotency skip does not mask legitimate updates."""
+    from hermes.config_client import write_yaml
+
+    target = tmp_path / "cfg" / "default.yaml"
+    write_yaml(target, {"server": {"url": "http://a", "model": "m"}})
+    text_a = target.read_text(encoding="utf-8")
+
+    import time
+    time.sleep(0.02)
+
+    write_yaml(target, {"server": {"url": "http://b", "model": "m"}})
+    text_b = target.read_text(encoding="utf-8")
+    assert "http://a" not in text_b
+    assert "http://b" in text_b
+    assert text_a != text_b
+    leftovers = [p.name for p in target.parent.iterdir() if p.name != target.name]
+    assert leftovers == []
+
+
+def test_ensure_client_config_idempotent_no_write_when_defaults_present(tmp_path, monkeypatch):
+    """ensure_client_config must not touch %LOCALAPPDATA%/HermesClient/config
+    when the file already contains the correct server defaults. Otherwise
+    every tray EXE start rewrites the file and collides with transient
+    Windows share-locks -> PermissionError(13)."""
+    from hermes.config_client import ensure_client_config, DEFAULT_SERVER_URL, DEFAULT_MODEL
+
+    user_cfg = tmp_path / "HermesClient" / "config" / "default.yaml"
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    # Force paths module to re-derive app_data_dir from our patched env.
+    import hermes.config.paths as paths_mod
+
+    orig_app_data = paths_mod.app_data_dir
+    try:
+        paths_mod.app_data_dir = lambda: tmp_path / "HermesClient"
+        assert user_cfg.parent == paths_mod.user_config_dir()
+
+        user_cfg.parent.mkdir(parents=True, exist_ok=True)
+        user_cfg.write_text(
+            f"server:\n  url: {DEFAULT_SERVER_URL}\n  model: {DEFAULT_MODEL}\n",
+            encoding="utf-8",
+        )
+        first_bytes = user_cfg.read_bytes()
+        first_mtime_ns = user_cfg.stat().st_mtime_ns
+
+        import time
+        time.sleep(0.02)
+
+        result = ensure_client_config()
+        assert result == user_cfg
+        assert user_cfg.read_bytes() == first_bytes
+        assert user_cfg.stat().st_mtime_ns == first_mtime_ns
+    finally:
+        paths_mod.app_data_dir = orig_app_data
+

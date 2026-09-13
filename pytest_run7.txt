@@ -1,0 +1,42 @@
+﻿FF.FF..................F..............FF.FF.......F                      [100%]
+================================== FAILURES ===================================
+E   AssertionError: assert False
+     +  where False = is_file()
+     +    where is_file = (WindowsPath('C:/Users/OMER/AppData/Local/Temp/pytest-of-OMER/pytest-160/test_production_session_persis0/state') / 'active_session.json').is_file
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:67: AssertionError: assert False
+E   KeyError: 'verified_references'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:136: KeyError: 'verified_references'
+E   assert None is not None
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:200: assert None is not None
+E   AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:241: AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+E   AssertionError: assert 2 >= 3
+     +  where 2 = len((EvidenceRecord(evidence_id='ev_24d49f0badbd', source=<EvidenceSource.TOOL_REPORT: 'tool_report'>, capability='filesys...le_content_hash'}, confidence=1.0, recorded_at='2026-09-13T11:57:15.936898+00:00', correlation_id='turn_dcf7fcdb2305')))
+     +    where (EvidenceRecord(evidence_id='ev_24d49f0badbd', source=<EvidenceSource.TOOL_REPORT: 'tool_report'>, capability='filesys...le_content_hash'}, confidence=1.0, recorded_at='2026-09-13T11:57:15.936898+00:00', correlation_id='turn_dcf7fcdb2305')) = <hermes.world_model.state.WorldModel object at 0x000001CEB0667650>.evidence
+     +      where <hermes.world_model.state.WorldModel object at 0x000001CEB0667650> = <hermes.runtime.orchestrator.V3Orchestrator object at 0x000001CEB05A7DF0>.world_model
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_final_acceptance_v3.py:278: AssertionError: assert 2 >= 3
+E   assert False is True
+     +  where False = TurnOutcome(reply="Reasoning failed: 'last_folder'", decision=None, iterations=1, completed=False).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:145: assert False is True
+E   assert False is True
+     +  where False = TurnOutcome(reply="Reasoning failed: 'environment'", decision=None, iterations=1, completed=False).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:230: assert False is True
+E   KeyError: 're_reason'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:352: KeyError: 're_reason'
+E   KeyError: 're_reason'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:395: KeyError: 're_reason'
+E   AssertionError: assert <EvidenceSource.OBSERVATION: 'observation'> in {<EvidenceSource.TOOL_REPORT: 'tool_report'>, <EvidenceSource.VERIFIER: 'verifier'>}
+     +  where <EvidenceSource.OBSERVATION: 'observation'> = EvidenceSource.OBSERVATION
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:668: AssertionError: assert <EvidenceSource.OBSERVATION: 'observation'> in {<EvidenceSource.TOOL_REPORT: 'tool_report'>, <EvidenceSource.VERIFIER: 'verifier'>}
+=========================== short test summary info ===========================
+FAILED tests/test_memory_v35.py::test_production_session_persists_and_restores_context
+FAILED tests/test_memory_v35.py::test_sessions_are_isolated_in_production_runtime
+FAILED tests/test_memory_v35.py::test_explicit_long_term_fact_from_reasoning_persists
+FAILED tests/test_memory_v35.py::test_sensitive_reasoning_memory_fact_is_rejected_fail_closed
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_11_complete_evidence_required
+FAILED tests/test_orchestrator_v34.py::test_create_folder_verifies_and_next_turn_uses_reference
+FAILED tests/test_orchestrator_v34.py::test_production_transport_carries_verified_reference_to_next_turn
+FAILED tests/test_orchestrator_v34.py::test_verification_failure_is_sent_to_rereasoning
+FAILED tests/test_orchestrator_v34.py::test_wrong_path_observation_then_recovery
+FAILED tests/test_orchestrator_v34.py::test_world_model_records_distinct_evidence_sources
+10 failed, 41 passed in 2.29s

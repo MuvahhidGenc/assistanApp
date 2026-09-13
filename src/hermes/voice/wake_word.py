@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-DEFAULT_WAKE_WORDS = ("abi", "akhi", "dostum")
+DEFAULT_WAKE_WORDS = ("abi", "akhi", "dostum", "muvahhid")
 
 STOP_COMMANDS = frozenset({"dur", "iptal", "sus", "stop", "cancel", "kapat"})
 

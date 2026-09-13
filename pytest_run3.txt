@@ -1,0 +1,74 @@
+﻿......FF.FF..............................F............F................. [ 81%]
+...FFFFFFFFFFF.F                                                         [100%]
+================================== FAILURES ===================================
+E   AssertionError: assert False
+     +  where False = is_file()
+     +    where is_file = (WindowsPath('C:/Users/OMER/AppData/Local/Temp/pytest-of-OMER/pytest-156/test_production_session_persis0/state') / 'active_session.json').is_file
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:67: AssertionError: assert False
+E   KeyError: 'verified_references'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:136: KeyError: 'verified_references'
+E   assert None is not None
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:200: assert None is not None
+E   AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:241: AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+E   ModuleNotFoundError: No module named 'hermes.agent.orchestrator'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_core_experience_v1.py:68: ModuleNotFoundError: No module named 'hermes.agent.orchestrator'
+E   AssertionError: assert True is False
+     +  where True = TurnOutcome(reply='all done', decision=Decision(kind=<DecisionKind.COMPLETE: 'complete'>, action=None, observation_req...son=None, correlation_id='turn_1522ca4cb2ca', required_capabilities=(), memory_facts=()), iterations=2, completed=True).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_final_acceptance_v3.py:275: AssertionError: assert True is False
+E   assert False is True
+     +  where False = TurnOutcome(reply="Reasoning failed: 'last_folder'", decision=None, iterations=1, completed=False).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:145: assert False is True
+E   assert False is True
+     +  where False = TurnOutcome(reply="Reasoning failed: 'environment'", decision=None, iterations=1, completed=False).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:230: assert False is True
+E   AssertionError: assert True is False
+     +  where True = TurnOutcome(reply='created', decision=Decision(kind=<DecisionKind.COMPLETE: 'complete'>, action=None, observation_requ...on_id='turn_70205d0f7760', required_capabilities=('filesystem.write',), memory_facts=()), iterations=2, completed=True).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:320: AssertionError: assert True is False
+E   KeyError: 're_reason'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:352: KeyError: 're_reason'
+E   KeyError: 're_reason'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:395: KeyError: 're_reason'
+E   AssertionError: assert True is False
+     +  where True = TurnOutcome(reply='all done', decision=Decision(kind=<DecisionKind.COMPLETE: 'complete'>, action=None, observation_req...ec377', required_capabilities=('filesystem.search', 'filesystem.open'), memory_facts=()), iterations=2, completed=True).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:428: AssertionError: assert True is False
+E   AssertionError: assert True is False
+     +  where True = TurnOutcome(reply='both created', decision=Decision(kind=<DecisionKind.COMPLETE: 'complete'>, action=None, observation...02413', required_capabilities=('filesystem.write', 'filesystem.write'), memory_facts=()), iterations=2, completed=True).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:464: AssertionError: assert True is False
+E   AssertionError: assert True is False
+     +  where True = TurnOutcome(reply='second done', decision=Decision(kind=<DecisionKind.COMPLETE: 'complete'>, action=None, observation_...son=None, correlation_id='turn_65a44bbae7ed', required_capabilities=(), memory_facts=()), iterations=1, completed=True).completed
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:513: AssertionError: assert True is False
+E   AttributeError: 'V3Orchestrator' object has no attribute '_active_turn_task'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:564: AttributeError: 'V3Orchestrator' object has no attribute '_active_turn_task'
+E   AttributeError: 'V3Orchestrator' object has no attribute 'cancel_active_turn'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:599: AttributeError: 'V3Orchestrator' object has no attribute 'cancel_active_turn'
+E   AssertionError: assert 'C:\\Users\\OMER\\Desktop' not in dict_values(['C:\\Users\\OMER\\Desktop', 'C:\\Users\\OMER\\Documents', 'C:\\Users\\OMER\\Downloads', 'C:\\Users\\OMER\\Pictures', 'C:\\Users\\OMER\\Music', 'C:\\Users\\OMER\\Videos'])
+     +  where dict_values(['C:\\Users\\OMER\\Desktop', 'C:\\Users\\OMER\\Documents', 'C:\\Users\\OMER\\Downloads', 'C:\\Users\\OMER\\Pictures', 'C:\\Users\\OMER\\Music', 'C:\\Users\\OMER\\Videos']) = <built-in method values of dict object at 0x000002949CF8F180>()
+     +    where <built-in method values of dict object at 0x000002949CF8F180> = {'desktop': 'C:\\Users\\OMER\\Desktop', 'documents': 'C:\\Users\\OMER\\Documents', 'downloads': 'C:\\Users\\OMER\\Downloads', 'pictures': 'C:\\Users\\OMER\\Pictures', ...}.values
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:616: AssertionError: assert 'C:\\Users\\OMER\\Desktop' not in dict_values(['C:\\Users\\OMER\\Desktop', 'C:\\Users\\OMER\\Documents', 'C:\\Users\\OMER\\Downloads', 'C:\\Users\\OMER\\Pictures', 'C:\\Users\\OMER\\Music', 'C:\\Users\\OMER\\Videos'])
+E   AssertionError: assert {<EvidenceSou...: 'verifier'>} == {<EvidenceSou...: 'verifier'>}
+      
+      Extra items in the right set:
+      <EvidenceSource.OBSERVATION: 'observation'>
+      Use -v to get more diff
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:661: AssertionError: assert {<EvidenceSou...: 'verifier'>} == {<EvidenceSou...: 'verifier'>}
+=========================== short test summary info ===========================
+FAILED tests/test_memory_v35.py::test_production_session_persists_and_restores_context
+FAILED tests/test_memory_v35.py::test_sessions_are_isolated_in_production_runtime
+FAILED tests/test_memory_v35.py::test_explicit_long_term_fact_from_reasoning_persists
+FAILED tests/test_memory_v35.py::test_sensitive_reasoning_memory_fact_is_rejected_fail_closed
+FAILED tests/test_core_experience_v1.py::test_early_simple_local_sets_fast_path_trace
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_11_complete_evidence_required
+FAILED tests/test_orchestrator_v34.py::test_create_folder_verifies_and_next_turn_uses_reference
+FAILED tests/test_orchestrator_v34.py::test_production_transport_carries_verified_reference_to_next_turn
+FAILED tests/test_orchestrator_v34.py::test_success_true_with_unknown_verification_cannot_complete
+FAILED tests/test_orchestrator_v34.py::test_verification_failure_is_sent_to_rereasoning
+FAILED tests/test_orchestrator_v34.py::test_wrong_path_observation_then_recovery
+FAILED tests/test_orchestrator_v34.py::test_incomplete_multi_step_goal_cannot_complete
+FAILED tests/test_orchestrator_v34.py::test_repeated_capability_requirements_need_distinct_verified_actions
+FAILED tests/test_orchestrator_v34.py::test_prior_turn_evidence_cannot_complete_unrelated_turn
+FAILED tests/test_orchestrator_v34.py::test_timeout_cancels_execution_and_next_turn_is_clean
+FAILED tests/test_orchestrator_v34.py::test_explicit_cancellation_joins_active_execution
+FAILED tests/test_orchestrator_v34.py::test_windows_known_folder_observation_uses_current_user_environment
+FAILED tests/test_orchestrator_v34.py::test_world_model_records_distinct_evidence_sources
+18 failed, 70 passed in 10.64s

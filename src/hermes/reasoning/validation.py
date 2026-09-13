@@ -21,13 +21,29 @@ class DecisionContractError(ValueError):
 
 
 def validate_decision_payload(
-    payload: Any,
+    payload: dict[str, Any],
     *,
-    available_capabilities: tuple[dict[str, Any], ...],
-    world_snapshot: dict[str, Any],
-    correlation_id: str = "",
+    available_capabilities: Any,
+    world_snapshot: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
+    check_requirement_transition: bool = True,
+    check_input_schema: bool = True,
+    require_required_capabilities: bool = True,
 ) -> dict[str, Any]:
-    """Validate one decision without repairing, defaulting, or interpreting it."""
+    """Validate one decision without repairing, defaulting, or interpreting it.
+
+    ``check_requirement_transition`` gates the world-snapshot requirement-set
+    transition rule. ``check_input_schema`` gates the capability input-schema
+    check. Both are strict-by-default; callers that re-validate runtime
+    decisions mid-turn (where the orchestrator legitimately grows or switches
+    the requirement set, e.g. after a failed tool call) may disable them.
+
+    ``require_required_capabilities`` gates the presence check on the
+    ``required_capabilities`` array. Strict by default (external decisions
+    must declare their requirement footprint); turn-time validation against
+    live server models that omit the field may disable it so a missing array
+    defaults to empty instead of failing the whole turn.
+    """
     if not isinstance(payload, dict):
         raise DecisionContractError("Reasoning decision must be a JSON object")
 
@@ -40,29 +56,33 @@ def validate_decision_payload(
         for item in available_capabilities
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     }
-    required = _required_capabilities(payload, contracts)
-    _validate_requirement_transition(
-        required,
-        world_snapshot,
-        kind=kind,
-        action_capability=(
-            str(payload.get("capability") or "").strip()
-            if kind == "action"
-            else ""
-        ),
+    required = _required_capabilities(
+        payload, contracts, require_missing=require_required_capabilities
     )
+    if check_requirement_transition:
+        _validate_requirement_transition(
+            required,
+            world_snapshot,
+            kind=kind,
+            action_capability=(
+                str(payload.get("capability") or "").strip()
+                if kind == "action"
+                else ""
+            ),
+        )
 
     if kind == "action":
         capability = _required_text(payload, "capability")
         _known_capability(capability, contracts, field="capability")
-        if capability not in required:
+        if capability not in required and require_required_capabilities:
             raise DecisionContractError(
                 "Action capability must be present in required_capabilities"
             )
         arguments = payload.get("arguments")
         if not isinstance(arguments, dict):
             raise DecisionContractError("Action arguments must be an object")
-        _validate_required_inputs(contracts[capability], arguments)
+        if check_input_schema:
+            _validate_required_inputs(contracts[capability], arguments)
     elif kind == "observation_request":
         observation_type = _required_text(payload, "observation_type")
         contract = _known_capability(
@@ -83,7 +103,8 @@ def validate_decision_payload(
             str(payload.get("target") or "").strip(),
             contract,
         )
-        _validate_required_inputs(contract, observation_arguments)
+        if check_input_schema:
+            _validate_required_inputs(contract, observation_arguments)
     elif kind == "user_question":
         _required_text(payload, "question")
         options = payload.get("options", [])
@@ -110,8 +131,12 @@ def validate_decision_payload(
 def _required_capabilities(
     payload: dict[str, Any],
     contracts: dict[str, dict[str, Any]],
+    *,
+    require_missing: bool = True,
 ) -> tuple[str, ...]:
     if "required_capabilities" not in payload:
+        if not require_missing:
+            return ()
         raise DecisionContractError("Missing required_capabilities")
     raw = payload["required_capabilities"]
     if raw is None:

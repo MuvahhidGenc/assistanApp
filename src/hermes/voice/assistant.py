@@ -48,6 +48,7 @@ class VoiceAssistant:
     _cancelled: bool = field(default=False, init=False)
     _voice_enabled: bool = field(default=True, init=False)
     _voice_session_active: bool = field(default=False, init=False)
+    _mic_in_use: bool = field(default=False, init=False)
     _last_spoken_text: str = field(default="", init=False)
     _last_spoken_at: float = field(default=0.0, init=False)
     _tts_error_notified: bool = field(default=False, init=False)
@@ -238,6 +239,10 @@ class VoiceAssistant:
     async def _barge_in_watch(self) -> None:
         """Listen for stop while TTS plays; requires real tts.stop()."""
         assert self.stt is not None
+        # The wake loop shares this microphone. While barge-in is active the
+        # two loops throttle each other (audio source contention makes every
+        # listen fail), so wake listening pauses until TTS finishes.
+        self._mic_in_use = True
         try:
             while not self._cancelled:
                 heard = await self.stt.listen(
@@ -255,10 +260,32 @@ class VoiceAssistant:
             raise
         except Exception as exc:
             logger.debug("barge_in_watch_error", error=str(exc))
+        finally:
+            self._mic_in_use = False
 
     async def handle_text_input(self, text: str) -> None:
         """Process typed user input — always available."""
         await self._handle_user_message(text.strip(), source="text", speak_response=True)
+
+    async def press_to_talk(
+        self,
+        wake_word: str = "muvahhid",
+        initial_command: str = "",
+    ) -> None:
+        """Public wrapper for press-to-talk voice session.
+
+        Reuses the private :meth:`_enter_voice_session` flow unchanged
+        so the existing utterance-assembler / STT / TTS / barge-in
+        pipeline is preserved without rewrite. Safe no-op when the
+        microphone is missing or a voice session is already active.
+        """
+        if self._voice_session_active:
+            return
+        if not self.stt or not self.stt.is_available():
+            await self._notify_status(self._mic_unavailable_message())
+            return
+        ww = str(wake_word or "muvahhid").strip() or "muvahhid"
+        await self._enter_voice_session(ww, initial_command=str(initial_command or ""))
 
     async def _handle_user_message(
         self,
@@ -431,7 +458,7 @@ class VoiceAssistant:
         """Listen for wake words only — not continuous command parsing."""
         assert self.stt is not None
         while self._running:
-            if self._voice_session_active:
+            if self._voice_session_active or self._mic_in_use:
                 await asyncio.sleep(0.2)
                 continue
             try:

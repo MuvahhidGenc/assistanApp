@@ -1,0 +1,9 @@
+﻿..F..............                                                        [100%]
+================================== FAILURES ===================================
+E   assert False
+     +  where False = isinstance(<hermes.runtime.bootstrap._NoOpMemory object at 0x000002F2680C8440>, RuntimeMemory)
+     +    where <hermes.runtime.bootstrap._NoOpMemory object at 0x000002F2680C8440> = V3Application(orchestrator=<hermes.runtime.orchestrator.V3Orchestrator object at 0x000002F268166990>, world_model=<her...at 0x000002F268165A90>, memory=<hermes.runtime.bootstrap._NoOpMemory object at 0x000002F2680C8440>, session_store=None).memory
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:390: assert False
+=========================== short test summary info ===========================
+FAILED tests/test_memory_v35.py::test_production_runtime_uses_real_memory_not_noop
+1 failed, 16 passed in 2.47s

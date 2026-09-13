@@ -1,0 +1,60 @@
+﻿FF.FF................s......FF.............FFFFFFFF.FF.F                 [100%]
+================================== FAILURES ===================================
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   assert None is not None
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:200: assert None is not None
+E   AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_memory_v35.py:241: AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+E   AssertionError: assert 2 >= 3
+     +  where 2 = len((EvidenceRecord(evidence_id='ev_c39af8a3e389', source=<EvidenceSource.TOOL_REPORT: 'tool_report'>, capability='filesys...le_content_hash'}, confidence=1.0, recorded_at='2026-09-13T11:51:36.541404+00:00', correlation_id='turn_514ef58b60f8')))
+     +    where (EvidenceRecord(evidence_id='ev_c39af8a3e389', source=<EvidenceSource.TOOL_REPORT: 'tool_report'>, capability='filesys...le_content_hash'}, confidence=1.0, recorded_at='2026-09-13T11:51:36.541404+00:00', correlation_id='turn_514ef58b60f8')) = <hermes.world_model.state.WorldModel object at 0x0000016B9624D810>.evidence
+     +      where <hermes.world_model.state.WorldModel object at 0x0000016B9624D810> = <hermes.runtime.orchestrator.V3Orchestrator object at 0x0000016B9636C050>.world_model
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_final_acceptance_v3.py:278: AssertionError: assert 2 >= 3
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   KeyError: 're_reason'
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:352: KeyError: 're_reason'
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+E   assert None is True
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:599: assert None is True
+E   AssertionError: assert 'C:\\Users\\OMER\\Desktop' not in dict_values(['C:\\Users\\OMER\\Desktop', 'C:\\Users\\OMER\\Documents', 'C:\\Users\\OMER\\Downloads', 'C:\\Users\\OMER\\Pictures', 'C:\\Users\\OMER\\Music', 'C:\\Users\\OMER\\Videos'])
+     +  where dict_values(['C:\\Users\\OMER\\Desktop', 'C:\\Users\\OMER\\Documents', 'C:\\Users\\OMER\\Downloads', 'C:\\Users\\OMER\\Pictures', 'C:\\Users\\OMER\\Music', 'C:\\Users\\OMER\\Videos']) = <built-in method values of dict object at 0x0000016B96367140>()
+     +    where <built-in method values of dict object at 0x0000016B96367140> = {'desktop': 'C:\\Users\\OMER\\Desktop', 'documents': 'C:\\Users\\OMER\\Documents', 'downloads': 'C:\\Users\\OMER\\Downloads', 'pictures': 'C:\\Users\\OMER\\Pictures', ...}.values
+C:\Users\OMER\Desktop\calismalarim\assistanApp\tests\test_orchestrator_v34.py:616: AssertionError: assert 'C:\\Users\\OMER\\Desktop' not in dict_values(['C:\\Users\\OMER\\Desktop', 'C:\\Users\\OMER\\Documents', 'C:\\Users\\OMER\\Downloads', 'C:\\Users\\OMER\\Pictures', 'C:\\Users\\OMER\\Music', 'C:\\Users\\OMER\\Videos'])
+E   AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+C:\Users\OMER\Desktop\calismalarim\assistanApp\src\hermes\runtime\orchestrator.py:438: AttributeError: 'WorldModel' object has no attribute 'requirement_satisfied'. Did you mean: 'mark_requirement_satisfied'?
+=========================== short test summary info ===========================
+FAILED tests/test_memory_v35.py::test_production_session_persists_and_restores_context
+FAILED tests/test_memory_v35.py::test_sessions_are_isolated_in_production_runtime
+FAILED tests/test_memory_v35.py::test_explicit_long_term_fact_from_reasoning_persists
+FAILED tests/test_memory_v35.py::test_sensitive_reasoning_memory_fact_is_rejected_fail_closed
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_11_complete_evidence_required
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_12_unexpected_triggers_re_reason
+FAILED tests/test_orchestrator_v34.py::test_create_folder_verifies_and_next_turn_uses_reference
+FAILED tests/test_orchestrator_v34.py::test_production_transport_carries_verified_reference_to_next_turn
+FAILED tests/test_orchestrator_v34.py::test_success_true_with_unknown_verification_cannot_complete
+FAILED tests/test_orchestrator_v34.py::test_verification_failure_is_sent_to_rereasoning
+FAILED tests/test_orchestrator_v34.py::test_wrong_path_observation_then_recovery
+FAILED tests/test_orchestrator_v34.py::test_incomplete_multi_step_goal_cannot_complete
+FAILED tests/test_orchestrator_v34.py::test_repeated_capability_requirements_need_distinct_verified_actions
+FAILED tests/test_orchestrator_v34.py::test_prior_turn_evidence_cannot_complete_unrelated_turn
+FAILED tests/test_orchestrator_v34.py::test_explicit_cancellation_joins_active_execution
+FAILED tests/test_orchestrator_v34.py::test_windows_known_folder_observation_uses_current_user_environment
+FAILED tests/test_orchestrator_v34.py::test_world_model_records_distinct_evidence_sources
+17 failed, 38 passed, 1 skipped in 2.44s

@@ -211,6 +211,11 @@ def apply_to_world_model(state: SessionState, world_model: WorldModel) -> None:
         binding_id = str(ref.get("binding_id", "")).strip()
         if not binding_id:
             raise ValueError("Persisted reference requires binding_id")
+        ref_extra = dict(ref.get("extra") or {})
+        if "verified" not in ref_extra:
+            verified_val = ref.get("verified")
+            if verified_val is not None:
+                ref_extra["verified"] = bool(verified_val)
         references.append(
             (
                 key,
@@ -222,7 +227,7 @@ def apply_to_world_model(state: SessionState, world_model: WorldModel) -> None:
                     provenance=str(ref.get("provenance", "")),
                     as_of=str(ref.get("as_of", "") or _utc_now_iso()),
                     expires_at=ref.get("expires_at"),
-                    extra=dict(ref.get("extra") or {}),
+                    extra=ref_extra,
                 ),
             )
         )

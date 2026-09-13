@@ -1,0 +1,76 @@
+﻿FF.FF...............F..F..............FF.FF.......F                      [100%]
+================================== FAILURES ===================================
+____________ test_production_session_persists_and_restores_context ____________
+tests\test_memory_v35.py:67: in test_production_session_persists_and_restores_context
+    assert (state_dir / "active_session.json").is_file()
+E   AssertionError: assert False
+E    +  where False = is_file()
+E    +    where is_file = (WindowsPath('C:/Users/OMER/AppData/Local/Temp/pytest-of-OMER/pytest-162/test_production_session_persis0/state') / 'active_session.json').is_file
+______________ test_sessions_are_isolated_in_production_runtime _______________
+tests\test_memory_v35.py:136: in test_sessions_are_isolated_in_production_runtime
+    assert b_payload["verified_references"] == {}
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'verified_references'
+____________ test_explicit_long_term_fact_from_reasoning_persists _____________
+tests\test_memory_v35.py:200: in test_explicit_long_term_fact_from_reasoning_persists
+    assert fact is not None
+E   assert None is not None
+________ test_sensitive_reasoning_memory_fact_is_rejected_fail_closed _________
+tests\test_memory_v35.py:241: in test_sensitive_reasoning_memory_fact_is_rejected_fail_closed
+    assert "kaydedemem" in outcome
+E   AssertionError: assert 'kaydedemem' in 'Kaydettim.'
+______________ test_acceptance_4_no_local_regex_semantic_routing ______________
+tests\test_final_acceptance_v3.py:131: in test_acceptance_4_no_local_regex_semantic_routing
+    assert not re.search(forbidden, non_docstring), (
+E   AssertionError: hermes.runtime.orchestrator contains forbidden regex routing pattern: 'if .*[\'\\"]browser[\'\\"].* in'
+E   assert not <re.Match object; span=(19249, 19305), match='if cap.endswith(".open") or "url" in cap or "brow>
+E    +  where <re.Match object; span=(19249, 19305), match='if cap.endswith(".open") or "url" in cap or "brow> = <function search at 0x0000024365C3CC20>('if .*[\'\\"]browser[\'\\"].* in', '\n\nfrom __future__ import annotations\n\nimport asyncio\nimport uuid\nfrom collections.abc import AsyncIterator, Awa...untime=runtime,\n        executor=executor,\n        execution_log=execution_log,\n        on_status=on_status,\n    )')
+E    +    where <function search at 0x0000024365C3CC20> = re.search
+________________ test_acceptance_11_complete_evidence_required ________________
+tests\test_final_acceptance_v3.py:278: in test_acceptance_11_complete_evidence_required
+    assert len(orch.world_model.evidence) >= 3
+E   AssertionError: assert 2 >= 3
+E    +  where 2 = len((EvidenceRecord(evidence_id='ev_a0b272def46b', source=<EvidenceSource.TOOL_REPORT: 'tool_report'>, capability='filesys...le_content_hash'}, confidence=1.0, recorded_at='2026-09-13T12:03:39.078047+00:00', correlation_id='turn_120e89a1dbdd')))
+E    +    where (EvidenceRecord(evidence_id='ev_a0b272def46b', source=<EvidenceSource.TOOL_REPORT: 'tool_report'>, capability='filesys...le_content_hash'}, confidence=1.0, recorded_at='2026-09-13T12:03:39.078047+00:00', correlation_id='turn_120e89a1dbdd')) = <hermes.world_model.state.WorldModel object at 0x00000243698CB450>.evidence
+E    +      where <hermes.world_model.state.WorldModel object at 0x00000243698CB450> = <hermes.runtime.orchestrator.V3Orchestrator object at 0x000002436993CAF0>.world_model
+__________ test_create_folder_verifies_and_next_turn_uses_reference ___________
+tests\test_orchestrator_v34.py:146: in test_create_folder_verifies_and_next_turn_uses_reference
+    assert client.second_turn_reference == str(folder)
+E   AssertionError: assert 'C:\\Users\\O..._verifies_an0' == 'C:\\Users\\O...an0\\deneme12'
+E     
+E     Skipping 79 identical leading characters in diff, use -v to show
+E     - erifies_an0\deneme12
+E     + erifies_an0
+______ test_production_transport_carries_verified_reference_to_next_turn ______
+tests\test_orchestrator_v34.py:230: in test_production_transport_carries_verified_reference_to_next_turn
+    assert first.completed is True
+E   assert False is True
+E    +  where False = TurnOutcome(reply="Reasoning failed: 'environment'", decision=None, iterations=1, completed=False).completed
+______________ test_verification_failure_is_sent_to_rereasoning _______________
+tests\test_orchestrator_v34.py:352: in test_verification_failure_is_sent_to_rereasoning
+    assert "verification was failed" in client.calls[1].extra["re_reason"]
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 're_reason'
+__________________ test_wrong_path_observation_then_recovery __________________
+tests\test_orchestrator_v34.py:395: in test_wrong_path_observation_then_recovery
+    assert client.calls[1].extra["re_reason"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 're_reason'
+_____________ test_world_model_records_distinct_evidence_sources ______________
+tests\test_orchestrator_v34.py:668: in test_world_model_records_distinct_evidence_sources
+    assert EvidenceSource.OBSERVATION in actual_sources
+E   AssertionError: assert <EvidenceSource.OBSERVATION: 'observation'> in {<EvidenceSource.TOOL_REPORT: 'tool_report'>, <EvidenceSource.VERIFIER: 'verifier'>}
+E    +  where <EvidenceSource.OBSERVATION: 'observation'> = EvidenceSource.OBSERVATION
+=========================== short test summary info ===========================
+FAILED tests/test_memory_v35.py::test_production_session_persists_and_restores_context
+FAILED tests/test_memory_v35.py::test_sessions_are_isolated_in_production_runtime
+FAILED tests/test_memory_v35.py::test_explicit_long_term_fact_from_reasoning_persists
+FAILED tests/test_memory_v35.py::test_sensitive_reasoning_memory_fact_is_rejected_fail_closed
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_4_no_local_regex_semantic_routing
+FAILED tests/test_final_acceptance_v3.py::test_acceptance_11_complete_evidence_required
+FAILED tests/test_orchestrator_v34.py::test_create_folder_verifies_and_next_turn_uses_reference
+FAILED tests/test_orchestrator_v34.py::test_production_transport_carries_verified_reference_to_next_turn
+FAILED tests/test_orchestrator_v34.py::test_verification_failure_is_sent_to_rereasoning
+FAILED tests/test_orchestrator_v34.py::test_wrong_path_observation_then_recovery
+FAILED tests/test_orchestrator_v34.py::test_world_model_records_distinct_evidence_sources
+11 failed, 40 passed in 2.72s
