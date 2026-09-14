@@ -33,7 +33,7 @@ from hermes.ui.modern_theme import (
 )
 from hermes.ui.v4_design import (
     V4HUDPanel, V4CoreCanvas, V4HUDStatusChip,
-    _phase_to_tr, status_color,
+    _phase_to_tr, make_selectable_text, status_color,
 )
 from hermes.ui.v4_audio import AudioProbe, SafeFallbackWaveform
 from hermes.ui.v4_store import V4UIStore
@@ -633,10 +633,10 @@ class V4Home:
         body = ctk.CTkFrame(row, fg_color="#0a2030", corner_radius=12,
                             border_width=1, border_color="#113a55")
         body.pack(side="right", fill="x", expand=False, anchor="n")
-        ctk.CTkLabel(
-            body, text=text, text_color=TEXT_BRIGHT,
-            font=FONT_HUD, anchor="w", justify="left", wraplength=240,
-        ).pack(anchor="e", padx=12, pady=(8, 2))
+        make_selectable_text(
+            body, text, font=FONT_HUD, fg=TEXT_BRIGHT, bg="#0a2030",
+            wrap_chars=48, padx=12, pady=6,
+        ).pack(anchor="e", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
             anchor="e", padx=12, pady=(0, 6))
         ctk.CTkLabel(
@@ -668,10 +668,10 @@ class V4Home:
         body = ctk.CTkFrame(row, fg_color=CARD, corner_radius=12,
                             border_width=1, border_color="#113a55")
         body.pack(side="left", fill="x", expand=True, anchor="n")
-        ctk.CTkLabel(
-            body, text=text, text_color=TEXT_BRIGHT,
-            font=FONT_HUD, anchor="w", justify="left", wraplength=260,
-        ).pack(anchor="w", padx=12, pady=(10, 2))
+        make_selectable_text(
+            body, text, font=FONT_HUD, fg=TEXT_BRIGHT, bg=CARD,
+            wrap_chars=48, padx=12, pady=8,
+        ).pack(anchor="w", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
             anchor="e", padx=12, pady=(0, 8))
         if _scroll_end:
@@ -693,10 +693,10 @@ class V4Home:
         body = ctk.CTkFrame(row, fg_color="transparent", corner_radius=8,
                             border_width=1, border_color=HOLO_GREEN)
         body.pack(fill="x")
-        ctk.CTkLabel(
-            body, text=f"• {text}", text_color=HOLO_GREEN,
-            font=FONT_MONO, anchor="w", justify="left", wraplength=260,
-        ).pack(anchor="w", padx=10, pady=(6, 2))
+        make_selectable_text(
+            body, f"• {text}", font=FONT_MONO, fg=HOLO_GREEN, bg=BG_DEEP,
+            wrap_chars=44, padx=10, pady=6,
+        ).pack(anchor="w", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
             anchor="e", padx=10, pady=(0, 6))
         if _scroll_end:
@@ -718,10 +718,10 @@ class V4Home:
         body = ctk.CTkFrame(row, fg_color="#1a0a12", corner_radius=8,
                             border_width=1, border_color=NEON_MAGENTA)
         body.pack(fill="x")
-        ctk.CTkLabel(
-            body, text=f"⚠ {text}", text_color=NEON_MAGENTA,
-            font=FONT_HUD, anchor="w", justify="left", wraplength=270,
-        ).pack(anchor="w", padx=10, pady=(6, 2))
+        make_selectable_text(
+            body, f"⚠ {text}", font=FONT_HUD, fg=NEON_MAGENTA, bg="#1a0a12",
+            wrap_chars=44, padx=10, pady=6,
+        ).pack(anchor="w", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
             anchor="e", padx=10, pady=(0, 6))
         if _scroll_end:

@@ -214,6 +214,26 @@ class V3Application:
         return outcome_reply
 
 
+def _reasoning_timeout_seconds(server: Any) -> float:
+    """Per-LLM-call ceiling, derived from the server transport's own timeout.
+
+    ``HermesServerClient`` carries the configured httpx timeout; a single
+    reasoning round-trip may legally take most of it (server-side planning
+    for multi-step tasks can be slow). We mirror it here so the reasoning
+    transport never imposes a tighter cap than the HTTP layer allows.
+    """
+    try:
+        import httpx
+
+        timeout = getattr(server, "_timeout", None)
+        if isinstance(timeout, httpx.Timeout):
+            configured = float(timeout.timeout or 0.0)
+            return max(60.0, configured)
+    except Exception:
+        pass
+    return 120.0
+
+
 def build_v3_application(
     *,
     server: Any,
@@ -269,7 +289,10 @@ def build_v3_application(
     # requests approval per-action through the registered provider.
 
     tool_executor = ToolExecutor(tools, policy, audit, approval, vers)
-    reasoning_client = HermesServerReasoningClient(server)
+    reasoning_client = HermesServerReasoningClient(
+        server,
+        timeout_seconds=_reasoning_timeout_seconds(server),
+    )
     from hermes.reasoning import ReasoningRuntime
 
     if memory is None:

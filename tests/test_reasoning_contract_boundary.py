@@ -175,6 +175,39 @@ def test_empty_required_capabilities_is_valid_when_no_capability_is_claimed():
     )
 
 
+def test_unknown_required_capability_entry_is_scrubbed_not_fatal():
+    """A model-generated declaration array can contain a loose label that is
+    not a registered capability (e.g. ``"terminal"``). Scrubbing the unknown
+    entry — instead of failing the whole turn and burning a full repair
+    round-trip — matches the ``memory_facts`` tolerance. The action's own
+    ``capability`` field is still validated strictly, so a genuinely
+    unmappable tool is still rejected.
+    """
+    validate_decision_payload(
+        {
+            "kind": "action",
+            "capability": "filesystem.write",
+            "arguments": {"path": "x", "content": "y"},
+            "required_capabilities": ["filesystem.write", "terminal"],
+        },
+        available_capabilities=_CAPABILITIES,
+        world_snapshot=_world(),
+        correlation_id="turn_current",
+    )
+    with pytest.raises(DecisionContractError):
+        validate_decision_payload(
+            {
+                "kind": "action",
+                "capability": "filesystem.unknown",
+                "arguments": {},
+                "required_capabilities": ["filesystem.unknown", "terminal"],
+            },
+            available_capabilities=_CAPABILITIES,
+            world_snapshot=_world(),
+            correlation_id="turn_current",
+        )
+
+
 def test_turn_time_validation_tolerates_missing_required_capabilities():
     """Live server models sometimes omit ``required_capabilities``. Turn-time
     (runtime) validation runs with ``require_required_capabilities=False`` so

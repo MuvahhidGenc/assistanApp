@@ -28,6 +28,7 @@ from hermes.ui.v4_design import (
     V4StatusBadge,
     V4StatusTile,
     _phase_to_tr,
+    make_selectable_text,
     status_color,
 )
 
@@ -345,10 +346,10 @@ class V4Chat:
         body = ctk.CTkFrame(row, fg_color="#0a2030", corner_radius=12,
                             border_width=1, border_color="#113a55")
         body.pack(side="right", fill="x", expand=False, anchor="n")
-        ctk.CTkLabel(
-            body, text=text, text_color=TEXT_BRIGHT,
-            font=FONT_HUD, anchor="w", justify="left", wraplength=420,
-        ).pack(anchor="e", padx=12, pady=(8, 2))
+        make_selectable_text(
+            body, text, font=FONT_HUD, fg=TEXT_BRIGHT, bg="#0a2030",
+            wrap_chars=58, padx=12, pady=6,
+        ).pack(anchor="e", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
             anchor="e", padx=12, pady=(0, 6))
         try:
@@ -374,12 +375,12 @@ class V4Chat:
         body = ctk.CTkFrame(row, fg_color=CARD, corner_radius=12,
                             border_width=1, border_color="#113a55")
         body.pack(side="left", fill="x", expand=True, anchor="n")
-        ctk.CTkLabel(
-            body, text=text, text_color=TEXT_BRIGHT,
-            font=FONT_HUD, anchor="w", justify="left", wraplength=420,
-        ).pack(anchor="w", padx=12, pady=(10, 2))
+        make_selectable_text(
+            body, text, font=FONT_HUD, fg=TEXT_BRIGHT, bg=CARD,
+            wrap_chars=58, padx=12, pady=8,
+        ).pack(anchor="w", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
-            anchor="e", padx=12, pady=(0, 8))
+            anchor="w", padx=12, pady=(0, 8))
         if _scroll_end:
             try:
                 self.scroll._parent_canvas.yview_moveto(1.0)
@@ -399,10 +400,10 @@ class V4Chat:
         body = ctk.CTkFrame(row, fg_color="transparent", corner_radius=8,
                             border_width=1, border_color=HOLO_GREEN)
         body.pack(fill="x")
-        ctk.CTkLabel(
-            body, text=f"• {text}", text_color=HOLO_GREEN,
-            font=FONT_MONO, anchor="w", justify="left", wraplength=420,
-        ).pack(anchor="w", padx=12, pady=(6, 2))
+        make_selectable_text(
+            body, f"• {text}", font=FONT_MONO, fg=HOLO_GREEN, bg=BG_DEEP,
+            wrap_chars=52, padx=12, pady=6,
+        ).pack(anchor="w", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
             anchor="e", padx=12, pady=(0, 6))
         if _scroll_end:
@@ -424,10 +425,10 @@ class V4Chat:
         body = ctk.CTkFrame(row, fg_color="#1a0a12", corner_radius=8,
                             border_width=1, border_color="#ff2a6d")
         body.pack(fill="x")
-        ctk.CTkLabel(
-            body, text=f"⚠ {text}", text_color="#ff2a6d",
-            font=FONT_HUD, anchor="w", justify="left", wraplength=420,
-        ).pack(anchor="w", padx=12, pady=(6, 2))
+        make_selectable_text(
+            body, f"⚠ {text}", font=FONT_HUD, fg="#ff2a6d", bg="#1a0a12",
+            wrap_chars=52, padx=12, pady=6,
+        ).pack(anchor="w", fill="x")
         ctk.CTkLabel(body, text=ts, text_color=MUTED, font=FONT_MONO).pack(
             anchor="e", padx=12, pady=(0, 6))
         if _scroll_end:
@@ -561,15 +562,10 @@ class V4Chat:
                 border_color=CARD_BORDER,
             )
             body.grid(row=1, column=1, sticky="we", pady=(3, 0))
-            ctk.CTkLabel(
-                body,
-                text=detail_val[:400],
-                text_color=TEXT,
-                font=FONT_HUD,
-                anchor="w",
-                justify="left",
-                wraplength=640,
-            ).pack(fill="x", anchor="w", padx=12, pady=8)
+            make_selectable_text(
+                body, detail_val[:400], font=FONT_HUD, fg=TEXT, bg=CARD,
+                wrap_chars=64, padx=12, pady=8,
+            ).pack(fill="x", anchor="w", padx=0, pady=0)
 
     # ── Public refresh ─────────────────────────────────────────────────
     def refresh(self) -> None:

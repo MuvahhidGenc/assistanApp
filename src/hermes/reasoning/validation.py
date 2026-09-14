@@ -151,7 +151,16 @@ def _required_capabilities(
                 "required_capabilities entries must be non-empty strings"
             )
         capability = value.strip()
-        _known_capability(capability, contracts, field="required_capabilities")
+        try:
+            _known_capability(capability, contracts, field="required_capabilities")
+        except DecisionContractError:
+            # The declaration array is model-generated and phrased loosely
+            # (e.g. "terminal" instead of a registered capability name).
+            # Fail the whole turn because of one fuzzy label would waste a
+            # full chat round-trip and stall real multi-step tasks; scrub the
+            # unknown entry instead. The action's own ``capability`` field is
+            # still validated strictly and must name a registered tool.
+            continue
         result.append(capability)
     return tuple(result)
 

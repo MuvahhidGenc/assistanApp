@@ -43,6 +43,65 @@ except Exception:  # pragma: no cover
     _PIL_Image = None  # type: ignore
     _PIL_Draw = None   # type: ignore
     _PIL_Filter = None  # type: ignore
+
+
+def _estimate_text_height(text: str, wrap_chars: int) -> int:
+    """Rough wrapped-line count so a selectable text bubble stays compact."""
+    width = max(4, int(wrap_chars))
+    lines = 0
+    for raw in str(text).splitlines():
+        lines += max(1, _math.ceil((len(raw) + 1) / max(1, width - 6)))
+    return max(1, min(24, lines))
+
+
+def make_selectable_text(
+    master: Any,
+    text: str,
+    *,
+    font: Any,
+    fg: str,
+    bg: str,
+    wrap_chars: int = 58,
+    padx: int = 12,
+    pady: int = 6,
+) -> Any:
+    """Read-only, fully selectable/copyable text body for chat bubbles.
+
+    CTkLabel has no text-selection support, which made conversation
+    answers impossible to copy. A disabled ``tk.Text`` still allows mouse
+    selection + Ctrl+C (and Ctrl+A) on Windows while remaining read-only.
+    Height is estimated from content so bubbles keep their compact look.
+    """
+    import tkinter as tk
+
+    width = max(12, int(wrap_chars))
+    box = tk.Text(
+        master,
+        width=width,
+        height=_estimate_text_height(text, width),
+        wrap="word",
+        font=font,
+        fg=fg,
+        bg=bg,
+        relief="flat",
+        bd=0,
+        highlightthickness=0,
+        padx=padx,
+        pady=pady,
+        cursor="arrow",
+        insertwidth=0,
+        selectbackground=NEON_CYAN,
+        selectforeground="#000a10",
+    )
+    box.insert("1.0", str(text))
+    box.configure(state="disabled")
+    try:
+        from hermes.ui.modern_theme import bind_copy_shortcuts
+
+        bind_copy_shortcuts(box, master.winfo_toplevel())
+    except Exception:  # pragma: no cover - non-critical nicety
+        pass
+    return box
     _PIL_Tk = None     # type: ignore
 
 

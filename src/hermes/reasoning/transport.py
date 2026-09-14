@@ -81,14 +81,15 @@ class HermesServerReasoningClient:
     is a parse error, raised so the runtime can decide what to do.
     """
 
-    def __init__(self, server: Any) -> None:
+    def __init__(self, server: Any, timeout_seconds: float = 180.0) -> None:
         self._server = server
+        self._timeout_seconds = timeout_seconds
 
     async def _call_chat(self, request: Any) -> str:
         import asyncio as _aio
 
         response = await _aio.wait_for(
-            self._server.chat(request), timeout=60.0
+            self._server.chat(request), timeout=self._timeout_seconds
         )
         return _extract_text(response)
 

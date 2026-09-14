@@ -142,6 +142,52 @@ def test_parse_decision_json_rejects_non_object():
 
 
 @pytest.mark.asyncio
+async def test_server_reasoning_client_uses_configured_call_timeout():
+    """The per-call ceiling is configurable and not hard-coded to 60s.
+
+    Multistep promises routinely need >60s on a busy gateway; a fixed
+    60s ``wait_for`` used to kill the whole turn. The client must honor
+    the timeout passed at construction (mirrored from the HTTP layer).
+    """
+    import asyncio as aio
+
+    class _SlowServer:
+        def __init__(self, delay: float) -> None:
+            self.delay = delay
+
+        async def chat(self, request):
+            await aio.sleep(self.delay)
+            return {
+                "choices": [
+                    {"message": {"content": '{"kind":"re_reason","reason":"done"}'}}
+                ]
+            }
+
+    with pytest.raises(TimeoutError):
+        await HermesServerReasoningClient(
+            _SlowServer(0.2), timeout_seconds=0.05
+        ).reason(
+            ReasoningPrompt(
+                user_message="x",
+                world_snapshot={},
+                available_capabilities=(),
+            )
+        )
+
+    # Wide-enough cap lets the same server complete.
+    reply = await HermesServerReasoningClient(
+        _SlowServer(0.05), timeout_seconds=5.0
+    ).reason(
+        ReasoningPrompt(
+            user_message="x",
+            world_snapshot={},
+            available_capabilities=(),
+        )
+    )
+    assert reply.decision_json == {"kind": "re_reason", "reason": "done"}
+
+
+@pytest.mark.asyncio
 async def test_server_reasoning_client_repairs_one_non_json_reply():
     class _Server:
         def __init__(self):
