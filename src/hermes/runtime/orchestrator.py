@@ -124,6 +124,7 @@ class V3Orchestrator:
         on_status: StatusCallback | None = None,
         max_iterations: int = 12,
         turn_timeout_seconds: float | None = None,
+        history_limit: int = 16,
     ) -> None:
         """Construct the V3 orchestrator.
 
@@ -131,6 +132,9 @@ class V3Orchestrator:
         ``None`` (default) keeps backwards-compatible behaviour; pass
         an explicit float in production wiring so a runaway reasoning
         loop cannot block the UI / voice pipeline indefinitely.
+
+        ``history_limit`` sizes the in-memory conversation ring used to
+        give the LLM cross-turn context ("onu ac", "ilkini sec").
         """
         self._runtime = runtime
         self._executor = executor
@@ -145,6 +149,11 @@ class V3Orchestrator:
         self._turn_generation: int = 0
         self._loaded_session_id: str = ""
         self._base_environment: dict[str, Any] = {}
+        # Cross-turn conversation ring: (role, content) turns of this
+        # session. Survives turn resets so the LLM can resolve
+        # references to what was said earlier.
+        self.history_limit = max(1, int(history_limit))
+        self._history: list[dict[str, str]] = []
         # Public accessor for the world model — used by
         # ``SessionStore`` to snapshot/resume state, and by callers
         # that want to inspect the current objective or evidence.
@@ -306,6 +315,7 @@ class V3Orchestrator:
         self._turn_cancelled = False
         self._turn_generation += 1
         self._world_model.set_objective(message)
+        self._append_history("user", message)
 
         iterations = 0
         last_decision: Decision | None = None
@@ -333,7 +343,7 @@ class V3Orchestrator:
                 V3AgentPhase.FAILED,
                 f"Turn timeout after {self._turn_timeout_seconds}s",
             )
-            return TurnOutcome(
+            outcome = TurnOutcome(
                 reply=(
                     f"İşlem zaman aşımına uğradı "
                     f"({self._turn_timeout_seconds:.0f} saniye)."
@@ -342,6 +352,9 @@ class V3Orchestrator:
                 iterations=iterations,
                 completed=False,
             )
+            self._append_history("assistant", outcome.reply)
+            return outcome
+        self._append_history("assistant", (outcome.reply if outcome else "") or "")
         return outcome
 
     async def _drive_turn(
@@ -385,6 +398,8 @@ class V3Orchestrator:
                     user_message=message,
                     world_model=self._world_model,
                     correlation_id=correlation_id,
+                    conversation_history=list(self._history),
+                    fast_path_eligible=(iterations == 1),
                 )
             except Exception as exc:
                 await self._emit_status(V3AgentPhase.FAILED, "Reasoning failed")
@@ -581,6 +596,16 @@ class V3Orchestrator:
         return TurnOutcome(reply=reply, decision=last_decision, iterations=iterations, completed=completed)
 
     # ---- helpers -------------------------------------------------------
+
+    def _append_history(self, role: str, content: str) -> None:
+        """Record one conversational turn for the reasoning context."""
+        role = (role or "").strip()
+        content = (content or "").strip()
+        if role not in ("user", "assistant") or not content:
+            return
+        self._history.append({"role": role, "content": content[:4000]})
+        if len(self._history) > self.history_limit:
+            self._history = self._history[-self.history_limit:]
 
     def _absorb_execution(self, outcome: ActionExecutionOutcome) -> None:
         """Translate an execution outcome into World Model updates.

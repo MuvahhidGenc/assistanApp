@@ -109,6 +109,11 @@ def set_api_key(api_key: str) -> None:
     cleaned = str(api_key or "").strip()
     if not cleaned:
         return
+    # Never persist a masked UI placeholder (e.g. "d0●●…●●40") over the real
+    # key. HTTP headers are ASCII; a key with '●' or any non-ASCII char is
+    # unusable as a Bearer token and indicates UI-corrupted input.
+    if "●" in cleaned or not cleaned.isascii():
+        return
     if _write_keyring(cleaned):
         return
     save_credentials({"hermes_api_key": cleaned})

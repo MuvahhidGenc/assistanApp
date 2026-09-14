@@ -42,6 +42,7 @@ class ReasoningPrompt:
     world_snapshot: dict[str, Any]
     available_capabilities: tuple[dict[str, Any], ...]
     recent_events: tuple[dict[str, Any], ...] = ()
+    conversation_history: tuple[dict[str, str], ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
     correlation_id: str = ""
     task_id: str = ""
@@ -191,13 +192,42 @@ def _build_system_prompt(prompt: ReasoningPrompt) -> str:
         "claim success without evidence; use observation_request until you "
         "have verified what you need. If reality contradicts the goal, do "
         "not declare complete; re-reason.\n"
+        "\n"
+        "Kullanici mesaji genellikle kisa ve yarim cumle olabilir (yazim "
+        "hatasi, eksik harf, sesli komutlar). Birkac kural:\n"
+        "  1. Acik anlam bariz oldugunda clarifying question SORMA. "
+        "'googleu ac' -> https://www.google.com; 'ilki oku' -> onceki "
+        "baglamdaki dosyaya bak. Bariz varsayilani doldur ve ilerle.\n"
+        "  2. Eksik bilgi yalnizca GERCEKTEN isi blokluyorsa sor. Adres, "
+        "yol veya icerik uc giderini canlandirma; icin sor.\n"
+        "  3. Cok adimli isler icin once observation_request ile gercek "
+        "durumu dogrula, sonra sirali action at; her action'da yetenek "
+        "adinı ve argumanlarini ver.\n"
+        "  4. Dosya islemlerinde tam Windows yolu kullan (C:/... veya "
+        "Desktop alti goreli yol). Icerik uydurma.\n"
+        "\n"
+        "Ornekler:\n"
+        "  kullanici: 'google'u ac'\n"
+        "  -> {\"kind\": \"action\", \"capability\": \"browser.navigate\", "
+        "\"arguments\": {\"url\": \"https://www.google.com\"}}\n"
+        "  kullanici: 'chrome'u baslat'\n"
+        "  -> {\"kind\": \"action\", \"capability\": \"application.open\", "
+        "\"arguments\": {\"app\": \"chrome\"}}\n"
+        "  kullanici: 'masaustungoogle klasoru nerede'\n"
+        "  -> {\"kind\": \"observation_request\", \"observation_type\": "
+        "\"filesystem.list\", \"target\": \"C:/Users/<kullanici>/Desktop\"}\n"
+        "  kullanici: 'uzaydaki ilk videoya tikla'\n"
+        "  -> {\"kind\": \"action\", \"capability\": \"screen.click\", "
+        "\"arguments\": {\"text\": \"videonun basliginin ilk kismi\"}}\n"
+        "\n"
         "Available capabilities:\n"
         f"{caps_text}\n"
         "JSON schema: {\"kind\": str, \"capability\": str?, \"arguments\": "
         "object?, \"rationale\": str?, \"expected_observation\": str?, "
         "\"observation_type\": str?, \"target\": str?, \"question\": str?, "
         "\"options\": list?, \"summary\": str?, \"evidence_ids\": list?, "
-        "\"reason\": str?}. No extra prose."
+        "\"reason\": str?, \"required_capabilities\": list?, "
+        "\"memory_facts\": list?}. No extra prose."
     )
 
 
@@ -343,6 +373,17 @@ def _build_user_payload(prompt: ReasoningPrompt) -> str:
         "verified_references": verified_references,
         "available_capabilities": list(prompt.available_capabilities),
     }
+    if prompt.conversation_history:
+        payload["conversation_history"] = [
+            {
+                "role": str(turn_item.get("role") or ""),
+                "content": str(turn_item.get("content") or ""),
+            }
+            for turn_item in prompt.conversation_history
+            if isinstance(turn_item, dict)
+            and turn_item.get("role")
+            and turn_item.get("content")
+        ]
     environment = snapshot.get("environment")
     if isinstance(environment, dict):
         payload["environment"] = environment

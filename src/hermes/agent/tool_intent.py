@@ -38,7 +38,7 @@ _RENAME_VERBS = re.compile(
 )
 _COPY_VERBS = re.compile(r"\b(kopyala|copy)\b", re.IGNORECASE)
 _MOVE_VERBS = re.compile(r"\b(tasi|taşı|move|aktar)\b", re.IGNORECASE)
-_VOLUME_VERBS = re.compile(r"\b(ses|volume|mute|sustur)\b", re.IGNORECASE)
+_VOLUME_VERBS = re.compile(r"\b(ses(?:i|ini|in|inle)?|volume|volüm|mute|sustur)\b", re.IGNORECASE)
 _SCREENSHOT_VERBS = re.compile(r"\b(ekran\s*gorunt|screenshot|ss\s*al)\b", re.IGNORECASE)
 
 _FILE_REF = re.compile(
@@ -149,6 +149,37 @@ def _extract_app_name(text: str, lower: str) -> str | None:
     return None
 
 
+def _tolerant_site_or_app_open(text: str, lower: str) -> bool:
+    """True for a short message that just names a known site/app.
+
+    Handles broken or verb-less Turkish input ("google ı", "chrome", "youtube")
+    after the richer open/file phrases have already failed. Guarded so it never
+    shadows file, folder, media or screen phrasing.
+    """
+    if not text or len(text) > 45:
+        return False
+    if re.search(
+        r"\b(dosya|klas(?:o|ö)r|belge|oku|okum|yaz|yazma|sil|silme|kopyala|tasi|taşı|"
+        r"indir|guncelle|güncelle|kur|kaldir|kaldır|degis|değiş|ekran|video|o??ayna|"
+        r"oynat|dinle|ses|goster|göster|liste)\b",
+        lower,
+    ):
+        return False
+    if re.search(r"\.[a-z0-9]{2,5}\b", lower):
+        return False
+    from hermes.agent.application_catalog import APPLICATION_ALIASES, WEB_SHORTCUTS
+
+    for name in WEB_SHORTCUTS:
+        if re.search(rf"\b{re.escape(name)}\b", lower):
+            return True
+    for aliases in APPLICATION_ALIASES.values():
+        for alias in aliases:
+            alias_lower = alias.casefold()
+            if len(alias_lower) >= 4 and alias_lower in lower:
+                return True
+    return False
+
+
 def _extract_new_name(text: str, lower: str) -> str | None:
     patterns = (
         r"(?:adini|adını)\s+(.+?)\s+(?:yap|koy|ver|olsun)",
@@ -256,6 +287,18 @@ class ToolIntentMatcher:
             )
 
         if _VOLUME_VERBS.search(lower):
+            level_match = re.search(r"(?:ses(?:i|ini)?|volume)\s*(\d{1,3})", lower)
+            if not level_match:
+                level_match = re.search(r"(\d{1,3})\s*(?:yap|yapa|gibi|seviye)", lower)
+            if level_match:
+                level = max(0, min(100, int(level_match.group(1))))
+                return ToolIntentResult(
+                    intent=LocalIntent(
+                        LocalToolRequest("set_volume", {"action": "set", "level": level}),
+                        f"Ses seviyesi {level}",
+                    ),
+                    confidence=0.9,
+                )
             action = "mute"
             if re.search(r"\b(ac|aç|unmute)\b", lower):
                 action = "unmute"
@@ -472,6 +515,45 @@ class ToolIntentMatcher:
             intent = _match_create_folder(text, lower)
             if intent:
                 return ToolIntentResult(intent=intent, confidence=0.84)
+
+        # Last resort: a short, possibly broken/missing-verb message that
+        # names a known web shortcut or application ("google ı", "chrome",
+        # "youtube ac"). File/folder phrasing already failed above, so it is
+        # safe to treat a lone known site/app name as an open request.
+        if _tolerant_site_or_app_open(text, lower):
+            from hermes.agent.application_catalog import APPLICATION_ALIASES, WEB_SHORTCUTS
+
+            best_url: str | None = None
+            best_len = 0
+            for name, url in WEB_SHORTCUTS.items():
+                if re.search(rf"\b{re.escape(name)}\b", lower) and len(name) > best_len:
+                    best_url = url
+                    best_len = len(name)
+            if best_url and self._tool_exists("open_url"):
+                return ToolIntentResult(
+                    intent=LocalIntent(
+                        LocalToolRequest("open_url", {"url": best_url}),
+                        f"{best_url} acilacak",
+                    ),
+                    confidence=0.8,
+                )
+            best_id: str | None = None
+            best_len = 0
+            for app_id, aliases in APPLICATION_ALIASES.items():
+                for alias in aliases:
+                    alias_lower = alias.casefold()
+                    if len(alias_lower) >= 4 and alias_lower in lower and len(alias_lower) > best_len:
+                        best_id = app_id
+                        best_len = len(alias_lower)
+            if best_id and self._tool_exists("open_app"):
+                return ToolIntentResult(
+                    intent=LocalIntent(
+                        LocalToolRequest("open_app", {"app": best_id}),
+                        f"{best_id} acilacak",
+                    ),
+                    resolved_references={"target_application": best_id},
+                    confidence=0.8,
+                )
 
         return ToolIntentResult()
 

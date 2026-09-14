@@ -222,6 +222,7 @@ def build_v3_application(
     approval_provider: ApprovalProvider | None = None,
     memory: Any = None,
     turn_timeout_seconds: float | None = 120.0,
+    fast_path_enabled: bool = False,
 ) -> V3Application:
     """Construct the V3 application.
 
@@ -242,6 +243,10 @@ def build_v3_application(
             ``long_term`` adapters. The runtime consults it read-only
             to enrich the LLM prompt. Defaults to a no-op facade so
             production keeps working without persistent memory.
+        fast_path_enabled: Whether the local fast path (rule-matched,
+            no-server round-trip) may answer explicit commands like
+            "google'u ac". Production defaults to True; tests may
+            disable it for deterministic LLM behaviour.
     """
     if log_dir is None:
         from hermes.config.paths import client_state_dir
@@ -285,6 +290,8 @@ def build_v3_application(
         capability_registry=caps,
         execution_log=log,
         memory=memory,
+        tool_registry=tools,
+        fast_path_enabled=fast_path_enabled,
     )
     orchestrator = V3Orchestrator(
         runtime=runtime,

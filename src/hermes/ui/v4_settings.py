@@ -514,19 +514,14 @@ class V4Settings:
             existing = None
 
         api_url = self._get_text(self._inputs["api_url"])
-        # API key: treat as unchanged if still masked.
+        # API key: treat as unchanged while the field shows the mask (●).
         key_entry_val = self._get_text(self._inputs["api_key"])
-        key_changed = bool(key_entry_val) and not all(c == "●" for c in key_entry_val if c != " ") and "●" not in (getattr(existing, "api_key", "") or "") or False
-        # simpler heuristic: if value contains at least one non-● char AND has fewer ● than mask length → treat as user typed.
-        mask_dots = key_entry_val.count("●")
-        typed_len = len(key_entry_val) - mask_dots
-        if typed_len >= 2 and len(key_entry_val) >= 4 and mask_dots == 0:
-            api_key = key_entry_val
-        elif typed_len > 2:
-            # typed new value (user pasted a key after deleting mask) → accept
-            api_key = key_entry_val
-        else:
+        if "●" in key_entry_val:
+            # Field is still masked — the user did not type a new key.
             api_key = str(getattr(existing, "api_key", "") or "") if existing is not None else ""
+        else:
+            # Mask cleared: user typed/pasted a real value.
+            api_key = key_entry_val
 
         model = self._get_text(self._inputs["model"]) or str(getattr(existing, "model", "") or "")
 

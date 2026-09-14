@@ -45,8 +45,11 @@ The runtime does **not**:
 from __future__ import annotations
 
 import json as _json
+import logging
 import re
 from collections.abc import Iterable
+
+_LOGGER = logging.getLogger(__name__)
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -83,6 +86,15 @@ class ReasoningRuntime:
     recent_event_limit: int = 24
     memory: Any = None  # optional: EpisodeStore + LongTermStore facade
 
+    # Local fast path. When enabled, ``reason`` first asks
+    # ``FastPathPlanner`` whether this explicit command can be answered
+    # without a server LLM round-trip. Disabled by default so existing
+    # callers/tests keep their exact behaviour; the production bootstrap
+    # turns it on explicitly.
+    tool_registry: Any = None
+    fast_path_enabled: bool = False
+    _fast_path_planner: Any = field(default=None, init=False, repr=False)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -93,13 +105,28 @@ class ReasoningRuntime:
         user_message: str,
         world_model: Any,
         correlation_id: str = "",
+        conversation_history: list[dict[str, str]] | None = None,
+        fast_path_eligible: bool = True,
     ) -> Decision:
         """Ask the LLM what to do next.
 
         The runtime reads the world + log + memory, calls the LLM once,
         parses the reply, and returns a typed Decision. It does not
         loop, retry, or execute — the orchestrator owns the loop.
+
+        ``conversation_history`` is the recent (role, content) turns of
+        this session so the LLM can resolve cross-turn references like
+        "onu ac". ``fast_path_eligible`` lets the orchestrator gate the
+        local fast path to the first reasoning iteration of a turn.
         """
+        decision = self._try_fast_path(
+            user_message,
+            world_model,
+            fast_path_eligible=fast_path_eligible,
+            correlation_id=correlation_id,
+        )
+        if decision is not None:
+            return decision
         snapshot = world_model.snapshot()
         events = list(self._recent_events(correlation_id))
         capabilities = tuple(
@@ -128,9 +155,44 @@ class ReasoningRuntime:
             correlation_id=correlation_id,
             task_id=_task_id_for(correlation_id),
             client_session_id=self._client_session_id(),
+            conversation_history=tuple(
+                _bounded_history(conversation_history, limit=8)
+            ),
         )
         reply = await self.client.reason(prompt)
         return self._build_decision(reply, correlation_id)
+
+    # ------------------------------------------------------------------
+    # Fast path
+    # ------------------------------------------------------------------
+
+    def _try_fast_path(
+        self,
+        user_message: str,
+        world_model: Any,
+        *,
+        fast_path_eligible: bool,
+        correlation_id: str,
+    ) -> Decision | None:
+        if not self.fast_path_enabled or not fast_path_eligible:
+            return None
+        try:
+            planner = self._fast_path_planner
+            if planner is None:
+                from hermes.reasoning.fast_path import FastPathPlanner
+
+                planner = FastPathPlanner(tool_registry=self.tool_registry)
+                self._fast_path_planner = planner
+            decision = planner.resolve(user_message, world_model)
+        except Exception as exc:
+            _LOGGER.debug("fast_path error: %s", exc, exc_info=True)
+            return None
+        if decision is None:
+            return None
+        from dataclasses import replace as _replace
+
+        _LOGGER.debug("fast_path resolved %r -> %s", user_message, decision.kind)
+        return _replace(decision, correlation_id=correlation_id)
 
     def _memory_view(self) -> dict[str, Any]:
         """Build a compact memory view for the LLM prompt.
@@ -173,6 +235,7 @@ class ReasoningRuntime:
         world_model: Any,
         correlation_id: str = "",
         reason: str = "",
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> Decision:
         """Convenience wrapper for the re-reason loop.
 
@@ -211,6 +274,9 @@ class ReasoningRuntime:
             correlation_id=correlation_id,
             task_id=_task_id_for(correlation_id),
             client_session_id=self._client_session_id(),
+            conversation_history=tuple(
+                _bounded_history(conversation_history, limit=8)
+            ),
         )
         reply = await self.client.reason(prompt)
         return self._build_decision(reply, correlation_id)
@@ -338,18 +404,48 @@ def _with_required_capabilities(
         raise ValueError("LLM decision field 'memory_facts' must be an array")
     facts: list[MemoryFact] = []
     for raw_fact in raw_facts:
-        if not isinstance(raw_fact, dict):
-            raise ValueError("Each memory fact must be an object")
-        key = str(raw_fact.get("key") or "").strip()
-        value = str(raw_fact.get("value") or "").strip()
+        key, value = _coerce_memory_fact(raw_fact)
         if not key or not value:
-            raise ValueError("Memory facts require non-empty key and value")
+            # A malformed fact is not worth failing the whole turn; drop it
+            # and let the memory layer keep whatever is cleanly expressible.
+            continue
         facts.append(MemoryFact(key=key, value=value))
     return replace(
         decision,
         required_capabilities=required,
         memory_facts=tuple(facts),
     )
+
+
+def _coerce_memory_fact(raw: Any) -> tuple[str, str]:
+    """Best-effort extraction of (key, value) from a memory fact.
+
+    The LLM often returns facts as objects with ``key``/``value`` fields, but
+    real models slip into looser shapes (a bare string, ``"key: value"``, or
+    ``"key=value"``). Hermes must not crash the whole turn because one fact is
+    phrased loosely — return ("", "") for anything unparseable and let the
+    caller skip it.
+    """
+    if isinstance(raw, dict):
+        key = str(raw.get("key") or "").strip()
+        value = str(raw.get("value") or "").strip()
+        return key, value
+    if hasattr(raw, "key") and hasattr(raw, "value"):
+        return str(getattr(raw, "key", "") or "").strip(), str(getattr(raw, "value", "") or "").strip()
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return "", ""
+        # "key: value" or "key = value" (first separator wins).
+        for sep in (":", "=", "->"):
+            if sep in text:
+                key, _, value = text.partition(sep)
+                key = key.strip().strip("\"'")
+                value = value.strip().strip("\"'")
+                if key:
+                    return key, value
+        return "", ""
+    return "", ""
 
 
 def _payload_to_dict(payload: Any) -> dict[str, Any]:
@@ -463,3 +559,24 @@ def _scrub_payload(payload: Any, *, max_str: int = 4000) -> Any:
     if isinstance(payload, (list, tuple)):
         return [_scrub_payload(item) for item in payload]
     return str(payload)
+
+
+def _bounded_history(
+    conversation_history: list[dict[str, str]] | None, *, limit: int = 8
+) -> list[dict[str, str]]:
+    """Normalise + bound raw turns to (role, content) dicts for the prompt.
+
+    Content is truncated so a long multi-turn session cannot blow the
+    reasoning payload; only the last ``limit`` turns are kept.
+    """
+    if not conversation_history:
+        return []
+    bounded: list[dict[str, str]] = []
+    for turn in conversation_history:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role") or "").strip()
+        content = str(turn.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            bounded.append({"role": role, "content": content[:800]})
+    return bounded[-limit:]
