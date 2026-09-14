@@ -372,11 +372,30 @@ class BackgroundWorker:
         from hermes.server.models import ApprovalRequest
         from hermes.ui.notifications import notify
 
+        auto_approve = bool(
+            getattr(getattr(self._app, "settings", None), "ui", None)
+            and self._app.settings.ui.auto_approve_local_tools
+        )
+
         async def on_approval(approval: ApprovalRequest) -> str:
+            if auto_approve and getattr(approval, "tool", "") != "run_command":
+                logger.info("approval_auto", tool=getattr(approval, "tool", ""))
+                return "evet"
             notify(
                 "HERMES Onay",
                 f"{approval.title}\n{approval.description}\nUI veya ses: evet / iptal",
                 enabled=self._notifications_enabled,
+            )
+            self.state.append_message(
+                "system",
+                f"Onay gerekiyor: {approval.title}. Onaylamak icin 'evet' veya Iptal icin 'iptal' yazin.",
+            )
+            self._emit(
+                "message",
+                {
+                    "role": "system",
+                    "text": f"Onay gerekiyor: {approval.title}. 'evet' veya 'iptal' yazin.",
+                },
             )
             loop = asyncio.get_running_loop()
             if self._approval_future and not self._approval_future.done():
@@ -494,6 +513,14 @@ class BackgroundWorker:
         if payload.kind == WorkerCommand.SEND_MESSAGE:
             text = str(payload.data.get("text", "")).strip()
             if not text:
+                return
+            if self._approval_is_pending():
+                if self._resolve_approval_from_text(text):
+                    return
+                self._emit(
+                    "error",
+                    {"message": "Onay bekleniyor. Once Onayla/evet veya Iptal yazin."},
+                )
                 return
             self.state.append_message("user", text)
             self.state.set_activity(ActivityMode.THINKING, status="Gonderiliyor...")

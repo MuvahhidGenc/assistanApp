@@ -3,7 +3,44 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from hermes.tools.windows.network_tools import DnsLookupTool, PingHostTool
+from hermes.tools.windows.pc_actions import RunCommandTool, _unix_syntax_error
 from hermes.tools.windows.process_tools import ListServicesTool
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'mkdir -p "C:/Users/x/Desktop/tevhid" && echo hi > f.txt',
+        "rm -rf C:/temp",
+        "sudo apt-get update",
+    ],
+)
+def test_unix_style_command_guard(command):
+    hint = _unix_syntax_error(command)
+    assert hint
+    assert "POSIX" in hint or "posix" in hint.casefold()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "New-Item -ItemType Directory -Path C:/Users/x/Desktop/abc",
+        "Start-Process notepad",
+        "Get-Service -Name spooler",
+    ],
+)
+def test_windows_command_not_guarded(command):
+    assert _unix_syntax_error(command) == ""
+
+
+@pytest.mark.asyncio
+async def test_run_command_rejects_unix_syntax_fast():
+    tool = RunCommandTool()
+    result = await tool.execute(
+        command='mkdir -p "C:/Users/x/Desktop/tevhid" && echo hi > f.txt'
+    )
+    assert not result.success
+    assert "create_folder" in result.error or "write_file" in result.error
 
 
 @pytest.mark.asyncio

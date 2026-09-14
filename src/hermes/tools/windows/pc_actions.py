@@ -695,16 +695,23 @@ class RunCommandTool(BaseTool):
             return ToolExecutionResult(success=False, error="command gerekli")
         shell_name = (shell or "powershell").strip().lower()
 
+        unix_hint = _unix_syntax_error(cmd_text)
+        if unix_hint:
+            return ToolExecutionResult(
+                success=False,
+                error=unix_hint,
+            )
+
         try:
             if shell_name in ("cmd", "command"):
-                code, stdout, stderr = await run_command(["cmd", "/c", cmd_text], timeout=300.0)
+                code, stdout, stderr = await run_command(["cmd", "/c", cmd_text], timeout=60.0)
             else:
-                code, stdout, stderr = await run_powershell(cmd_text, timeout=300.0)
+                code, stdout, stderr = await run_powershell(cmd_text, timeout=60.0)
                 if code != 0:
                     from hermes.platform.elevation import needs_admin_error, run_powershell_elevated
 
                     if needs_admin_error(stderr or stdout):
-                        code, stdout, stderr = await run_powershell_elevated(cmd_text)
+                        code, stdout, stderr = await run_powershell_elevated(cmd_text, timeout=45.0)
             if code != 0:
                 return ToolExecutionResult(success=False, error=stderr or stdout or f"Cikis kodu {code}")
             return ToolExecutionResult(
@@ -713,7 +720,7 @@ class RunCommandTool(BaseTool):
                 verified=True,
             )
         except Exception as exc:
-            return ToolExecutionResult(success=False, error=str(exc))
+            return ToolExecutionResult(success=False, error=f"Komut calistirilamadi: {exc}")
 
     def get_parameters_schema(self) -> dict[str, Any]:
         return {
@@ -729,3 +736,40 @@ class RunCommandTool(BaseTool):
             },
             "required": ["command"],
         }
+
+
+_UNIX_ONLY_PATTERNS = (
+    (r"\bmkdir\s+-p\b", "mkdir -p"),
+    (r"\brm\s+-rf?\b", "rm -rf"),
+    (r"\btouch\s+", "touch"),
+    (r"\bchmod\b", "chmod"),
+    (r"\bchown\b", "chown"),
+    (r"\bapt-get\b", "apt-get"),
+    (r"\bapt\s+", "apt"),
+    (r"\bbrew\s+", "brew"),
+    (r"\bsudo\b", "sudo"),
+    (r"\bgrep\s+", "grep"),
+    (r"\bsed\s+-", "sed -"),
+    (r"\bawk\b", "awk"),
+    (r"\bls\s+-", "ls -"),
+)
+
+
+def _unix_syntax_error(command: str) -> str:
+    """Return a helpful Turkish error when a POSIX-only command is detected.
+
+    The reasoning model occasionally emits bash/macOS/Linux syntax for
+    what should be Windows-local tool calls (``mkdir -p X && echo .. > f``).
+    Failing fast here — instead of handing a 300s subprocess that can never
+    terminate — turns a 5-minute hang into a 1s, actionable message.
+    """
+    lowered = (command or "").casefold()
+    for pattern, hint in _UNIX_ONLY_PATTERNS:
+        if re.search(pattern, lowered):
+            return (
+                f"Bu komut POSIX/bash icin yazilmis gibi gorunuyor ('{hint}') ve "
+                "Windows/PowerShell'de calismaz. Dosya/klasor islemleri icin "
+                "create_folder, write_file, read_file, copy_file, move_file "
+                "yetenegini kullan; kabuk komutu sadece sistem yonetimi icin."
+            )
+    return ""
